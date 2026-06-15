@@ -4,6 +4,9 @@ import {
   BrailleDocument,
   ValidationError,
   DotPosition,
+  PaginatedDocument,
+  HistoryEntry,
+  HistoryManagerState,
   CELL_COLS,
   CELL_ROWS,
   DEFAULT_DOT_RADIUS,
@@ -36,6 +39,20 @@ export function cloneDots(dots: boolean[][]): boolean[][] {
 
 export function createEmptyDots(): boolean[][] {
   return cloneDots(EMPTY_DOTS);
+}
+
+export function cloneDocument(doc: BrailleDocument): BrailleDocument {
+  return {
+    ...doc,
+    lines: doc.lines.map((line) => ({
+      ...line,
+      cells: line.cells.map((cell) => ({
+        ...cell,
+        dots: cloneDots(cell.dots),
+        originalDots: cell.originalDots ? cloneDots(cell.originalDots) : undefined,
+      })),
+    })),
+  };
 }
 
 export function isAllEmptyDots(dots: boolean[][]): boolean {
@@ -322,10 +339,71 @@ export function calculateLayout(
   };
 }
 
-export function validateDocument(
+export function paginateDocument(
   doc: BrailleDocument,
   plateWidth: number,
   plateHeight: number
+): PaginatedDocument {
+  const layout = calculateLayout(doc, plateWidth, plateHeight);
+  const padding = layout.padding;
+  const lineHeight = layout.lineHeight;
+  const availableHeight = plateHeight - padding * 2;
+  const availableWidth = plateWidth - padding * 2;
+  const linesPerPage = Math.max(1, Math.floor(availableHeight / lineHeight));
+
+  const pages: BrailleDocument[] = [];
+  const pageLineRanges: { startLine: number; endLine: number }[] = [];
+  let overflow = false;
+
+  let currentLine = 0;
+
+  while (currentLine < doc.lines.length) {
+    const pageLines: BrailleLine[] = [];
+    const startLine = currentLine;
+    let remainingLines = linesPerPage;
+
+    while (remainingLines > 0 && currentLine < doc.lines.length) {
+      const line = doc.lines[currentLine];
+      const lineWidth =
+        line.cells.length * layout.cellWidth +
+        Math.max(0, line.cells.length - 1) * doc.charSpacing;
+
+      if (lineWidth > availableWidth) {
+        overflow = true;
+      }
+
+      pageLines.push(line);
+      currentLine++;
+      remainingLines--;
+    }
+
+    pages.push({
+      ...doc,
+      lines: pageLines,
+    });
+    pageLineRanges.push({ startLine, endLine: currentLine - 1 });
+  }
+
+  if (pages.length === 0) {
+    pages.push({
+      ...doc,
+      lines: [],
+    });
+    pageLineRanges.push({ startLine: 0, endLine: -1 });
+  }
+
+  if (pages.length > 1) {
+    overflow = true;
+  }
+
+  return { pages, pageLineRanges, overflow };
+}
+
+export function validateDocument(
+  doc: BrailleDocument,
+  plateWidth: number,
+  plateHeight: number,
+  pageIndex: number = 0
 ): ValidationError[] {
   const errors: ValidationError[] = [];
   const layout = calculateLayout(doc, plateWidth, plateHeight);
@@ -334,6 +412,7 @@ export function validateDocument(
     errors.push({
       type: 'invalid_spacing',
       lineIndex: -1,
+      pageIndex,
       message: `行距必须大于 0，当前值: ${doc.lineSpacing}`,
       severity: 'error',
     });
@@ -343,6 +422,7 @@ export function validateDocument(
     errors.push({
       type: 'invalid_spacing',
       lineIndex: -1,
+      pageIndex,
       message: `字距必须大于 0，当前值: ${doc.charSpacing}`,
       severity: 'error',
     });
@@ -357,7 +437,8 @@ export function validateDocument(
           type: 'unknown_char',
           lineIndex: li,
           cellIndex: ci,
-          message: `第 ${li + 1} 行第 ${ci + 1} 格存在无法识别的字符: "${cell.sourceChar}"`,
+          pageIndex,
+          message: `第 ${pageIndex + 1} 页第 ${li + 1} 行第 ${ci + 1} 格存在无法识别的字符: "${cell.sourceChar}"`,
           severity: 'warning',
         });
       }
@@ -370,7 +451,8 @@ export function validateDocument(
       errors.push({
         type: 'out_of_bounds',
         lineIndex: li,
-        message: `第 ${li + 1} 行超出铜版宽度边界 (超出 ${(lineWidth + layout.padding * 2 - plateWidth).toFixed(1)}px)`,
+        pageIndex,
+        message: `第 ${pageIndex + 1} 页第 ${li + 1} 行超出铜版宽度边界 (超出 ${(lineWidth + layout.padding * 2 - plateWidth).toFixed(1)}px)`,
         severity: 'error',
       });
     }
@@ -380,11 +462,50 @@ export function validateDocument(
     errors.push({
       type: 'out_of_bounds',
       lineIndex: -1,
-      message: `内容超出铜版高度边界 (超出 ${(layout.totalHeight - plateHeight).toFixed(1)}px)`,
+      pageIndex,
+      message: `第 ${pageIndex + 1} 页内容超出铜版高度边界 (超出 ${(layout.totalHeight - plateHeight).toFixed(1)}px)`,
       severity: 'error',
     });
   }
 
+  return errors;
+}
+
+export function validatePaginatedDocument(
+  paginated: PaginatedDocument,
+  plateWidth: number,
+  plateHeight: number
+): ValidationError[] {
+  const allErrors: ValidationError[] = [];
+  for (let pi = 0; pi < paginated.pages.length; pi++) {
+    const pageErrors = validateDocument(
+      paginated.pages[pi],
+      plateWidth,
+      plateHeight,
+      pi
+    );
+    allErrors.push(...pageErrors);
+  }
+  return allErrors;
+}
+
+export function validateMirrorConsistency(doc: BrailleDocument): ValidationError[] {
+  const errors: ValidationError[] = [];
+  for (let li = 0; li < doc.lines.length; li++) {
+    for (let ci = 0; ci < doc.lines[li].cells.length; ci++) {
+      const cell = doc.lines[li].cells[ci];
+      const mirrored = mirrorDots(cell.dots);
+      if (!dotsEqual(mirrorDots(mirrored), cell.dots)) {
+        errors.push({
+          type: 'mirror_mismatch',
+          lineIndex: li,
+          cellIndex: ci,
+          message: `第 ${li + 1} 行第 ${ci + 1} 格镜像一致性校验异常`,
+          severity: 'warning',
+        });
+      }
+    }
+  }
   return errors;
 }
 
@@ -536,4 +657,119 @@ export function getModifiedCells(doc: BrailleDocument, originalText: string): Se
     }
   }
   return modified;
+}
+
+export function createHistoryManager(): HistoryManagerState {
+  return {
+    entries: [],
+    currentIndex: -1,
+  };
+}
+
+export function pushHistoryEntry(
+  state: HistoryManagerState,
+  entry: Omit<HistoryEntry, 'id' | 'timestamp'>
+): HistoryManagerState {
+  const newEntry: HistoryEntry = {
+    ...entry,
+    id: genId('history'),
+    timestamp: Date.now(),
+  };
+
+  const newEntries = state.currentIndex < state.entries.length - 1
+    ? state.entries.slice(0, state.currentIndex + 1)
+    : [...state.entries];
+
+  newEntries.push(newEntry);
+
+  const MAX_HISTORY = 100;
+  if (newEntries.length > MAX_HISTORY) {
+    const overflow = newEntries.length - MAX_HISTORY;
+    return {
+      entries: newEntries.slice(overflow),
+      currentIndex: MAX_HISTORY - 1,
+    };
+  }
+
+  return {
+    entries: newEntries,
+    currentIndex: newEntries.length - 1,
+  };
+}
+
+export function undoHistory(
+  state: HistoryManagerState
+): { state: HistoryManagerState; document: BrailleDocument | null } {
+  if (state.currentIndex < 0) {
+    return { state, document: null };
+  }
+
+  const entry = state.entries[state.currentIndex];
+  const newIndex = state.currentIndex - 1;
+
+  return {
+    state: {
+      ...state,
+      currentIndex: newIndex,
+    },
+    document: cloneDocument(entry.documentBefore),
+  };
+}
+
+export function redoHistory(
+  state: HistoryManagerState
+): { state: HistoryManagerState; document: BrailleDocument | null } {
+  if (state.currentIndex >= state.entries.length - 1) {
+    return { state, document: null };
+  }
+
+  const newIndex = state.currentIndex + 1;
+  const entry = state.entries[newIndex];
+
+  return {
+    state: {
+      ...state,
+      currentIndex: newIndex,
+    },
+    document: cloneDocument(entry.documentAfter),
+  };
+}
+
+export function canUndo(state: HistoryManagerState): boolean {
+  return state.currentIndex >= 0;
+}
+
+export function canRedo(state: HistoryManagerState): boolean {
+  return state.currentIndex < state.entries.length - 1;
+}
+
+export function getHistoryDescriptions(state: HistoryManagerState): string[] {
+  return state.entries.map((e, i) => {
+    const marker = i === state.currentIndex ? '● ' : '  ';
+    const time = new Date(e.timestamp).toLocaleTimeString();
+    return `${marker}[${time}] ${e.description}`;
+  });
+}
+
+export function exportCanvasToImage(
+  canvas: HTMLCanvasElement,
+  format: 'png' | 'jpeg' = 'png',
+  quality: number = 0.95
+): string {
+  const type = format === 'jpeg' ? 'image/jpeg' : 'image/png';
+  return canvas.toDataURL(type, quality);
+}
+
+export function downloadCanvasImage(
+  canvas: HTMLCanvasElement,
+  filename: string,
+  format: 'png' | 'jpeg' = 'png'
+): void {
+  const dataUrl = exportCanvasToImage(canvas, format);
+  const link = document.createElement('a');
+  link.download = `${filename}.${format}`;
+  link.href = dataUrl;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }

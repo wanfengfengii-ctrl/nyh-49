@@ -6,6 +6,9 @@ import {
   CELL_COLS,
   CELL_ROWS,
   DEFAULT_PLATE_PADDING,
+  CalibrationConfig,
+  DEFAULT_CALIBRATION,
+  HighlightInfo,
 } from '../types/braille.js';
 import {
   calculateLayout,
@@ -14,6 +17,8 @@ import {
   getDotCenter,
   mirrorDots,
   hitTestDot,
+  exportCanvasToImage,
+  downloadCanvasImage,
 } from '../utils/braille-converter.js';
 
 @customElement('braille-canvas')
@@ -49,6 +54,19 @@ export class BrailleCanvas extends LitElement {
       pointer-events: none;
       z-index: 10;
     }
+    .page-label {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #667eea;
+      background: rgba(102, 126, 234, 0.1);
+      padding: 4px 10px;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 10;
+    }
   `;
 
   @property({ type: Object })
@@ -69,6 +87,18 @@ export class BrailleCanvas extends LitElement {
   @property({ type: String })
   label: string = '';
 
+  @property({ type: Number })
+  pageIndex: number = 0;
+
+  @property({ type: Number })
+  totalPages: number = 1;
+
+  @property({ type: Object })
+  calibration: CalibrationConfig = { ...DEFAULT_CALIBRATION };
+
+  @property({ type: Array })
+  highlights: HighlightInfo[] = [];
+
   @query('canvas')
   canvasEl!: HTMLCanvasElement;
 
@@ -88,9 +118,43 @@ export class BrailleCanvas extends LitElement {
       changedProperties.has('isMirror') ||
       changedProperties.has('plateWidth') ||
       changedProperties.has('plateHeight') ||
-      changedProperties.has('hoveredDot')
+      changedProperties.has('hoveredDot') ||
+      changedProperties.has('calibration') ||
+      changedProperties.has('highlights') ||
+      changedProperties.has('pageIndex')
     ) {
       this.renderCanvas();
+    }
+  }
+
+  exportImage(format: 'png' | 'jpeg' = 'png'): string {
+    if (!this.canvasEl) return '';
+    return exportCanvasToImage(this.canvasEl, format);
+  }
+
+  downloadImage(filename: string, format: 'png' | 'jpeg' = 'png') {
+    if (!this.canvasEl) return;
+    downloadCanvasImage(this.canvasEl, filename, format);
+  }
+
+  getCanvasElement(): HTMLCanvasElement | null {
+    return this.canvasEl;
+  }
+
+  scrollToHighlight(highlight: HighlightInfo): void {
+    if (!this.canvasEl || !this.document) return;
+    const layout = calculateLayout(this.document, this.plateWidth, this.plateHeight);
+
+    if (highlight.lineIndex >= 0) {
+      const lineY = getLineY(highlight.lineIndex, layout);
+      const container = this.canvasEl.parentElement;
+      if (container) {
+        const targetScroll = Math.max(0, lineY - 50);
+        container.scrollTo({
+          top: targetScroll,
+          behavior: 'smooth',
+        });
+      }
     }
   }
 
@@ -110,7 +174,9 @@ export class BrailleCanvas extends LitElement {
 
     this.drawBackground(ctx);
     this.drawGrid(ctx);
+    this.drawCalibration(ctx);
     this.drawPlateBorder(ctx);
+    this.drawHighlights(ctx);
     this.drawCells(ctx);
   }
 
@@ -137,6 +203,113 @@ export class BrailleCanvas extends LitElement {
     }
   }
 
+  private drawCalibration(ctx: CanvasRenderingContext2D) {
+    if (!this.calibration) return;
+    const padding = DEFAULT_PLATE_PADDING;
+
+    if (this.calibration.showSafetyMargin) {
+      const margin = this.calibration.safetyMarginSize;
+      ctx.save();
+      ctx.strokeStyle = this.calibration.marginColor;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 6]);
+      ctx.strokeRect(
+        padding + margin,
+        padding + margin,
+        this.plateWidth - (padding + margin) * 2,
+        this.plateHeight - (padding + margin) * 2
+      );
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = this.calibration.marginColor;
+      ctx.font = '10px sans-serif';
+      ctx.fillText(
+        `安全边距 ${margin}px`,
+        padding + margin + 4,
+        padding + margin + 12
+      );
+      ctx.restore();
+    }
+
+    if (this.calibration.showBaselines) {
+      ctx.save();
+      ctx.strokeStyle = this.calibration.baselineColor;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([8, 4]);
+      ctx.globalAlpha = 0.7;
+
+      const centerY = this.plateHeight / 2;
+      const centerX = this.plateWidth / 2;
+
+      ctx.beginPath();
+      ctx.moveTo(0, centerY);
+      ctx.lineTo(this.plateWidth, centerY);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(centerX, 0);
+      ctx.lineTo(centerX, this.plateHeight);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = this.calibration.baselineColor;
+      ctx.font = '10px sans-serif';
+      ctx.fillText('水平基准线', 8, centerY - 4);
+      ctx.save();
+      ctx.translate(centerX + 4, this.plateHeight - 8);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('垂直基准线', 0, 0);
+      ctx.restore();
+      ctx.restore();
+    }
+
+    if (this.calibration.showRegistrationHoles) {
+      ctx.save();
+      const holeRadius = 6;
+      const holeMargin = 15;
+      const positions = [
+        { x: padding + holeMargin, y: padding + holeMargin },
+        { x: this.plateWidth - padding - holeMargin, y: padding + holeMargin },
+        { x: padding + holeMargin, y: this.plateHeight - padding - holeMargin },
+        { x: this.plateWidth - padding - holeMargin, y: this.plateHeight - padding - holeMargin },
+      ];
+
+      ctx.fillStyle = this.calibration.holeColor;
+      ctx.strokeStyle = this.calibration.holeColor;
+
+      for (const pos of positions) {
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, holeRadius + 3, 0, Math.PI * 2);
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([2, 2]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, holeRadius, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = this.calibration.holeColor;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, 2, 0, Math.PI * 2);
+        ctx.fillStyle = this.calibration.holeColor;
+        ctx.fill();
+      }
+
+      ctx.fillStyle = this.calibration.holeColor;
+      ctx.font = '10px sans-serif';
+      ctx.fillText(
+        '定位孔 (Registration)',
+        padding + holeMargin + 15,
+        padding + holeMargin + 4
+      );
+      ctx.restore();
+    }
+  }
+
   private drawPlateBorder(ctx: CanvasRenderingContext2D) {
     const padding = DEFAULT_PLATE_PADDING;
     ctx.strokeStyle = '#c0392b';
@@ -153,6 +326,76 @@ export class BrailleCanvas extends LitElement {
     ctx.fillStyle = '#c0392b';
     ctx.font = '11px sans-serif';
     ctx.fillText('铜版边界', padding + 4, padding - 6);
+  }
+
+  private drawHighlights(ctx: CanvasRenderingContext2D) {
+    if (!this.highlights || this.highlights.length === 0) return;
+    const layout = calculateLayout(this.document, this.plateWidth, this.plateHeight);
+
+    for (const hl of this.highlights) {
+      if (hl.pageIndex !== this.pageIndex && hl.pageIndex !== undefined) continue;
+      if (hl.lineIndex < 0) continue;
+
+      const lineY = getLineY(hl.lineIndex, layout);
+      let color = hl.color;
+      if (!color) {
+        switch (hl.type) {
+          case 'error':
+            color = 'rgba(231, 76, 60, 0.25)';
+            break;
+          case 'warning':
+            color = 'rgba(243, 156, 18, 0.25)';
+            break;
+          case 'selection':
+            color = 'rgba(52, 152, 219, 0.35)';
+            break;
+          default:
+            color = 'rgba(46, 204, 113, 0.25)';
+        }
+      }
+
+      if (hl.cellIndex !== undefined && hl.cellIndex >= 0) {
+        const cellX = getCellX(hl.cellIndex, layout, this.document.charSpacing);
+        let borderColor = hl.type === 'error' ? '#e74c3c' : hl.type === 'warning' ? '#f39c12' : '#3498db';
+        
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 2.5;
+        ctx.fillRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+        ctx.strokeRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+        ctx.restore();
+
+        if (hl.dotRow !== undefined && hl.dotCol !== undefined) {
+          const { x, y } = getDotCenter(
+            hl.dotRow,
+            hl.dotCol,
+            cellX,
+            lineY,
+            this.document.dotRadius
+          );
+          ctx.save();
+          ctx.strokeStyle = borderColor;
+          ctx.lineWidth = 3;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.arc(x, y, this.document.dotRadius * 1.5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      } else {
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.fillRect(
+          layout.padding,
+          lineY,
+          this.plateWidth - layout.padding * 2,
+          layout.cellHeight
+        );
+        ctx.restore();
+      }
+    }
   }
 
   private drawCells(ctx: CanvasRenderingContext2D) {
@@ -299,8 +542,8 @@ export class BrailleCanvas extends LitElement {
     this.hoveredDot = pos;
 
     if (this.isDragging && pos) {
-      const event = new CustomEvent<{ position: DotPosition; value: boolean }>('dot-toggle', {
-        detail: { position: pos, value: this.dragValue },
+      const event = new CustomEvent<{ position: DotPosition; value: boolean; pageIndex: number }>('dot-toggle', {
+        detail: { position: pos, value: this.dragValue, pageIndex: this.pageIndex },
         bubbles: true,
         composed: true,
       });
@@ -330,8 +573,8 @@ export class BrailleCanvas extends LitElement {
       if (cell) {
         this.dragValue = !cell.dots[pos.dotRow][pos.dotCol];
       }
-      const event = new CustomEvent<{ position: DotPosition; value: boolean }>('dot-toggle', {
-        detail: { position: pos, value: this.dragValue },
+      const event = new CustomEvent<{ position: DotPosition; value: boolean; pageIndex: number }>('dot-toggle', {
+        detail: { position: pos, value: this.dragValue, pageIndex: this.pageIndex },
         bubbles: true,
         composed: true,
       });
@@ -347,6 +590,9 @@ export class BrailleCanvas extends LitElement {
     return html`
       <div class="canvas-container">
         ${this.label ? html`<div class="view-label">${this.label}</div>` : ''}
+        ${this.totalPages > 1
+          ? html`<div class="page-label">第 ${this.pageIndex + 1} / ${this.totalPages} 页</div>`
+          : ''}
         <canvas
           @mousemove=${this.handleMouseMove}
           @mouseleave=${this.handleMouseLeave}
