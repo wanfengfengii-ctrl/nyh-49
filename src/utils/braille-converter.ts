@@ -13,6 +13,7 @@ import {
   DEFAULT_LINE_SPACING,
   DEFAULT_CHAR_SPACING,
   DEFAULT_PLATE_PADDING,
+  HighlightInfo,
   ReviewIssue,
   ReviewComment,
   ReviewIssueStatus,
@@ -22,6 +23,9 @@ import {
   ReviewState,
   ReviewStatus,
   Reviewer,
+  StatusLogEntry,
+  StatusLogAction,
+  ReviewStatistics,
   createInitialReviewState,
   DEFAULT_REVIEWER,
 } from '../types/braille.js';
@@ -944,7 +948,7 @@ export function createReviewIssue(params: {
   tags?: string[];
 }): ReviewIssue {
   const now = Date.now();
-  return {
+  const issue: ReviewIssue = {
     id: genId('issue'),
     title: params.title,
     description: params.description,
@@ -962,9 +966,36 @@ export function createReviewIssue(params: {
     createdAt: now,
     updatedAt: now,
     comments: [],
+    statusLogs: [],
     versionSnapshot: params.versionSnapshot ? cloneDocument(params.versionSnapshot) : undefined,
     tags: params.tags,
   };
+
+  issue.statusLogs.push({
+    id: genId('log'),
+    issueId: issue.id,
+    action: 'created',
+    authorId: params.reporter.id,
+    authorName: params.reporter.name,
+    timestamp: now,
+    description: `创建了问题`,
+  });
+
+  if (params.assignee) {
+    issue.statusLogs.push({
+      id: genId('log'),
+      issueId: issue.id,
+      action: 'assignee_changed',
+      authorId: params.reporter.id,
+      authorName: params.reporter.name,
+      timestamp: now,
+      oldValue: '未分配',
+      newValue: params.assignee.name,
+      description: `分配给 ${params.assignee.name}`,
+    });
+  }
+
+  return issue;
 }
 
 export function addReviewComment(
@@ -972,18 +1003,31 @@ export function addReviewComment(
   author: Reviewer,
   content: string
 ): ReviewIssue {
+  const now = Date.now();
   const comment: ReviewComment = {
     id: genId('comment'),
     issueId: issue.id,
     authorId: author.id,
     authorName: author.name,
     content,
-    timestamp: Date.now(),
+    timestamp: now,
   };
+
+  const logEntry: StatusLogEntry = {
+    id: genId('log'),
+    issueId: issue.id,
+    action: 'comment_added',
+    authorId: author.id,
+    authorName: author.name,
+    timestamp: now,
+    description: `添加了评论`,
+  };
+
   return {
     ...issue,
     comments: [...issue.comments, comment],
-    updatedAt: Date.now(),
+    statusLogs: [...issue.statusLogs, logEntry],
+    updatedAt: now,
   };
 }
 
@@ -992,33 +1036,92 @@ export function updateIssueStatus(
   status: ReviewIssueStatus,
   resolver?: Reviewer
 ): ReviewIssue {
+  const now = Date.now();
+  const logEntry: StatusLogEntry = {
+    id: genId('log'),
+    issueId: issue.id,
+    action: 'status_changed',
+    authorId: resolver?.id ?? issue.reporterId,
+    authorName: resolver?.name ?? issue.reporterName,
+    timestamp: now,
+    oldValue: getStatusLabel(issue.status),
+    newValue: getStatusLabel(status),
+    description: `状态从 ${getStatusLabel(issue.status)} 变更为 ${getStatusLabel(status)}`,
+  };
+
   return {
     ...issue,
     status,
-    updatedAt: Date.now(),
-    resolvedAt: status === 'resolved' || status === 'confirmed' ? Date.now() : undefined,
+    updatedAt: now,
+    resolvedAt: status === 'resolved' || status === 'rejected' ? now : undefined,
+    statusLogs: [...issue.statusLogs, logEntry],
   };
 }
 
 export function assignIssue(issue: ReviewIssue, assignee: Reviewer): ReviewIssue {
+  const now = Date.now();
+  const logEntry: StatusLogEntry = {
+    id: genId('log'),
+    issueId: issue.id,
+    action: 'assignee_changed',
+    authorId: issue.reporterId,
+    authorName: issue.reporterName,
+    timestamp: now,
+    oldValue: issue.assigneeName || '未分配',
+    newValue: assignee.name,
+    description: `分配给 ${assignee.name}`,
+  };
+
   return {
     ...issue,
     assigneeId: assignee.id,
     assigneeName: assignee.name,
-    updatedAt: Date.now(),
+    updatedAt: now,
+    statusLogs: [...issue.statusLogs, logEntry],
   };
 }
 
 export function filterIssues(
   issues: ReviewIssue[],
-  statusFilter: ReviewIssueStatus | 'all',
-  severityFilter: ReviewIssueSeverity | 'all',
-  pageIndex?: number
+  options: Partial<{
+    status: ReviewIssueStatus | 'all';
+    severity: ReviewIssueSeverity | 'all';
+    pageIndex: number | 'all';
+    assigneeId: string | 'all';
+    reporterId: string | 'all';
+    keyword: string;
+  }>
 ): ReviewIssue[] {
+  const {
+    status = 'all',
+    severity = 'all',
+    pageIndex = 'all',
+    assigneeId = 'all',
+    reporterId = 'all',
+    keyword = '',
+  } = options;
+
   return issues.filter((issue) => {
-    if (statusFilter !== 'all' && issue.status !== statusFilter) return false;
-    if (severityFilter !== 'all' && issue.severity !== severityFilter) return false;
-    if (pageIndex !== undefined && issue.pageIndex !== pageIndex) return false;
+    if (status !== 'all' && issue.status !== status) return false;
+    if (severity !== 'all' && issue.severity !== severity) return false;
+    if (pageIndex !== 'all' && issue.pageIndex !== pageIndex) return false;
+    if (assigneeId !== 'all') {
+      if (assigneeId === 'unassigned') {
+        if (issue.assigneeId) return false;
+      } else {
+        if (issue.assigneeId !== assigneeId) return false;
+      }
+    }
+    if (reporterId !== 'all' && issue.reporterId !== reporterId) return false;
+    if (keyword) {
+      const kw = keyword.toLowerCase();
+      if (
+        !issue.title.toLowerCase().includes(kw) &&
+        !issue.description.toLowerCase().includes(kw)
+      ) {
+        return false;
+      }
+    }
     return true;
   });
 }
@@ -1203,5 +1306,168 @@ export function getReviewStatusLabel(status: ReviewStatus): string {
       return '已驳回';
     default:
       return status;
+  }
+}
+
+export function calculateReviewStatistics(
+  issues: ReviewIssue[],
+  signatures: ReviewSignature[],
+  versionHistory: VersionDiff[]
+): ReviewStatistics {
+  const issuesByPage: Record<number, number> = {};
+  const issuesByAssignee: Record<string, number> = {};
+  const issuesBySeverity: Record<ReviewIssueSeverity, number> = {
+    critical: 0,
+    major: 0,
+    minor: 0,
+    suggestion: 0,
+  };
+  const issuesByStatus: Record<ReviewIssueStatus, number> = {
+    pending: 0,
+    confirmed: 0,
+    rejected: 0,
+    resolved: 0,
+  };
+
+  let totalResolutionTime = 0;
+  let resolvedCount = 0;
+
+  for (const issue of issues) {
+    issuesByPage[issue.pageIndex] = (issuesByPage[issue.pageIndex] || 0) + 1;
+    issuesBySeverity[issue.severity]++;
+    issuesByStatus[issue.status]++;
+
+    if (issue.assigneeId) {
+      issuesByAssignee[issue.assigneeId] = (issuesByAssignee[issue.assigneeId] || 0) + 1;
+    }
+
+    if ((issue.status === 'resolved' || issue.status === 'rejected') && issue.resolvedAt) {
+      totalResolutionTime += issue.resolvedAt - issue.createdAt;
+      resolvedCount++;
+    }
+  }
+
+  const resolvedIssues = issuesByStatus.resolved + issuesByStatus.rejected;
+  const resolutionRate = issues.length > 0 ? (resolvedIssues / issues.length) * 100 : 0;
+
+  return {
+    totalIssues: issues.length,
+    pendingIssues: issuesByStatus.pending,
+    confirmedIssues: issuesByStatus.confirmed,
+    resolvedIssues: issuesByStatus.resolved,
+    rejectedIssues: issuesByStatus.rejected,
+    criticalIssues: issuesBySeverity.critical,
+    majorIssues: issuesBySeverity.major,
+    minorIssues: issuesBySeverity.minor,
+    suggestionIssues: issuesBySeverity.suggestion,
+    issuesByPage,
+    issuesByAssignee,
+    issuesBySeverity,
+    issuesByStatus,
+    resolutionRate,
+    avgResolutionTime: resolvedCount > 0 ? totalResolutionTime / resolvedCount : undefined,
+    totalSignatures: signatures.length,
+    versionCount: versionHistory.length,
+  };
+}
+
+export function getDiffHighlights(
+  versionA: BrailleDocument,
+  versionB: BrailleDocument,
+  pageIndex: number = 0
+): HighlightInfo[] {
+  const highlights: HighlightInfo[] = [];
+  const maxLines = Math.max(versionA.lines.length, versionB.lines.length);
+
+  for (let li = 0; li < maxLines; li++) {
+    const lineA = versionA.lines[li];
+    const lineB = versionB.lines[li];
+    const maxCells = Math.max(lineA?.cells.length ?? 0, lineB?.cells.length ?? 0);
+
+    for (let ci = 0; ci < maxCells; ci++) {
+      const cellA = lineA?.cells[ci];
+      const cellB = lineB?.cells[ci];
+
+      const dotsA = cellA?.dots ?? createEmptyDots();
+      const dotsB = cellB?.dots ?? createEmptyDots();
+
+      if (!dotsEqual(dotsA, dotsB)) {
+        const hasActiveA = !isAllEmptyDots(dotsA);
+        const hasActiveB = !isAllEmptyDots(dotsB);
+
+        let type: HighlightInfo['type'];
+        let color: string;
+
+        if (!hasActiveA && hasActiveB) {
+          type = 'diff-added';
+          color = 'rgba(39, 174, 96, 0.3)';
+        } else if (hasActiveA && !hasActiveB) {
+          type = 'diff-removed';
+          color = 'rgba(231, 76, 60, 0.3)';
+        } else {
+          type = 'diff-added';
+          color = 'rgba(241, 196, 15, 0.3)';
+        }
+
+        highlights.push({
+          pageIndex,
+          lineIndex: li,
+          cellIndex: ci,
+          type,
+          color,
+        });
+      }
+    }
+  }
+
+  return highlights;
+}
+
+export function getStatusLogActionLabel(action: StatusLogAction): string {
+  switch (action) {
+    case 'created':
+      return '创建';
+    case 'status_changed':
+      return '状态变更';
+    case 'assignee_changed':
+      return '分配变更';
+    case 'comment_added':
+      return '评论';
+    case 'severity_changed':
+      return '级别变更';
+    case 'version_snapshot':
+      return '版本快照';
+    default:
+      return action;
+  }
+}
+
+export function getAllStatusLogs(issues: ReviewIssue[]): StatusLogEntry[] {
+  const logs: StatusLogEntry[] = [];
+  for (const issue of issues) {
+    logs.push(...issue.statusLogs);
+  }
+  return logs.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+export function getIssuesByPage(issues: ReviewIssue[], pageIndex: number): ReviewIssue[] {
+  return issues.filter((issue) => issue.pageIndex === pageIndex);
+}
+
+export function getIssuesByAssignee(issues: ReviewIssue[], assigneeId: string): ReviewIssue[] {
+  return issues.filter((issue) => issue.assigneeId === assigneeId);
+}
+
+export function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) {
+    return `${days}天${hours % 24}小时`;
+  } else if (hours > 0) {
+    return `${hours}小时${minutes % 60}分钟`;
+  } else {
+    return `${minutes}分钟`;
   }
 }

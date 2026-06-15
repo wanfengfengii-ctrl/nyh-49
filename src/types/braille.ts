@@ -91,8 +91,18 @@ export interface HighlightInfo {
   cellIndex?: number;
   dotRow?: number;
   dotCol?: number;
-  type: 'error' | 'warning' | 'info' | 'selection';
+  type: 'error' | 'warning' | 'info' | 'selection' | 'diff-added' | 'diff-removed';
   color?: string;
+}
+
+export type DiffHighlightType = 'added' | 'removed' | 'modified';
+
+export interface DiffCellInfo {
+  lineIndex: number;
+  cellIndex: number;
+  type: DiffHighlightType;
+  dotsBefore?: boolean[][];
+  dotsAfter?: boolean[][];
 }
 
 export const CELL_COLS = 2;
@@ -133,6 +143,27 @@ export interface ReviewComment {
   attachments?: string[];
 }
 
+export type StatusLogAction =
+  | 'created'
+  | 'status_changed'
+  | 'assignee_changed'
+  | 'comment_added'
+  | 'severity_changed'
+  | 'version_snapshot';
+
+export interface StatusLogEntry {
+  id: string;
+  issueId: string;
+  action: StatusLogAction;
+  authorId: string;
+  authorName: string;
+  timestamp: number;
+  oldValue?: string;
+  newValue?: string;
+  description: string;
+  metadata?: Record<string, any>;
+}
+
 export interface ReviewIssue {
   id: string;
   title: string;
@@ -152,6 +183,7 @@ export interface ReviewIssue {
   updatedAt: number;
   resolvedAt?: number;
   comments: ReviewComment[];
+  statusLogs: StatusLogEntry[];
   versionSnapshot?: BrailleDocument;
   tags?: string[];
 }
@@ -176,9 +208,40 @@ export interface VersionDiff {
   author: string;
 }
 
+export interface ReviewStatistics {
+  totalIssues: number;
+  pendingIssues: number;
+  confirmedIssues: number;
+  resolvedIssues: number;
+  rejectedIssues: number;
+  criticalIssues: number;
+  majorIssues: number;
+  minorIssues: number;
+  suggestionIssues: number;
+  issuesByPage: Record<number, number>;
+  issuesByAssignee: Record<string, number>;
+  issuesBySeverity: Record<ReviewIssueSeverity, number>;
+  issuesByStatus: Record<ReviewIssueStatus, number>;
+  resolutionRate: number;
+  avgResolutionTime?: number;
+  totalSignatures: number;
+  versionCount: number;
+  reviewCycleDays?: number;
+}
+
+export interface IssueFilterOptions {
+  status: ReviewIssueStatus | 'all';
+  severity: ReviewIssueSeverity | 'all';
+  pageIndex: number | 'all';
+  assigneeId: string | 'all';
+  reporterId: string | 'all';
+  keyword: string;
+}
+
 export interface ReviewState {
   issues: ReviewIssue[];
   currentUser: Reviewer;
+  reviewers: Reviewer[];
   reviewStatus: ReviewStatus;
   signatures: ReviewSignature[];
   versionHistory: VersionDiff[];
@@ -186,6 +249,14 @@ export interface ReviewState {
   showIssueMarkers: boolean;
   selectedIssueFilter: ReviewIssueStatus | 'all';
   selectedSeverityFilter: ReviewIssueSeverity | 'all';
+  selectedPageFilter: number | 'all';
+  selectedAssigneeFilter: string | 'all';
+  showDiffView: boolean;
+  diffVersionA?: string;
+  diffVersionB?: string;
+  linkWithValidation: boolean;
+  linkWithPlateView: boolean;
+  showStatsPanel: boolean;
 }
 
 export const DEFAULT_REVIEWER: Reviewer = {
@@ -194,15 +265,29 @@ export const DEFAULT_REVIEWER: Reviewer = {
   role: '审校员',
 };
 
+export const DEFAULT_REVIEWERS: Reviewer[] = [
+  { id: 'user_1', name: '张审校', role: '高级审校员' },
+  { id: 'user_2', name: '李制作', role: '制版工程师' },
+  { id: 'user_3', name: '王编辑', role: '责任编辑' },
+  { id: 'user_4', name: '赵质检', role: '质量检查员' },
+];
+
 export function createInitialReviewState(): ReviewState {
   return {
     issues: [],
-    currentUser: DEFAULT_REVIEWER,
+    currentUser: DEFAULT_REVIEWERS[0],
+    reviewers: DEFAULT_REVIEWERS,
     reviewStatus: 'draft',
     signatures: [],
     versionHistory: [],
     showIssueMarkers: true,
     selectedIssueFilter: 'all',
     selectedSeverityFilter: 'all',
+    selectedPageFilter: 'all',
+    selectedAssigneeFilter: 'all',
+    showDiffView: false,
+    linkWithValidation: true,
+    linkWithPlateView: true,
+    showStatsPanel: false,
   };
 }

@@ -10,6 +10,7 @@ import {
   DEFAULT_CALIBRATION,
   HighlightInfo,
   ReviewIssue,
+  DiffCellInfo,
 } from '../types/braille.js';
 import { getSeverityColor } from '../utils/braille-converter.js';
 import {
@@ -21,6 +22,9 @@ import {
   hitTestDot,
   exportCanvasToImage,
   downloadCanvasImage,
+  cloneDots,
+  dotsEqual,
+  isAllEmptyDots,
 } from '../utils/braille-converter.js';
 
 @customElement('braille-canvas')
@@ -107,6 +111,15 @@ export class BrailleCanvas extends LitElement {
   @property({ type: Boolean })
   showIssueMarkers: boolean = true;
 
+  @property({ type: Boolean })
+  diffMode: boolean = false;
+
+  @property({ type: Object })
+  diffDocument?: BrailleDocument;
+
+  @property({ type: String })
+  diffSide: 'left' | 'right' | 'overlay' = 'overlay';
+
   @query('canvas')
   canvasEl!: HTMLCanvasElement;
 
@@ -131,7 +144,10 @@ export class BrailleCanvas extends LitElement {
       changedProperties.has('highlights') ||
       changedProperties.has('pageIndex') ||
       changedProperties.has('reviewIssues') ||
-      changedProperties.has('showIssueMarkers')
+      changedProperties.has('showIssueMarkers') ||
+      changedProperties.has('diffMode') ||
+      changedProperties.has('diffDocument') ||
+      changedProperties.has('diffSide')
     ) {
       this.renderCanvas();
     }
@@ -200,6 +216,9 @@ export class BrailleCanvas extends LitElement {
     this.drawCalibration(ctx);
     this.drawPlateBorder(ctx);
     this.drawHighlights(ctx);
+    if (this.diffMode && this.diffDocument) {
+      this.drawDiffOverlay(ctx);
+    }
     this.drawCells(ctx);
     if (this.showIssueMarkers) {
       this.drawIssueMarkers(ctx);
@@ -485,6 +504,107 @@ export class BrailleCanvas extends LitElement {
       }
 
       ctx.restore();
+    }
+  }
+
+  private drawDiffOverlay(ctx: CanvasRenderingContext2D) {
+    if (!this.diffDocument) return;
+    const layout = calculateLayout(this.document, this.plateWidth, this.plateHeight);
+    const docA = this.diffDocument;
+    const docB = this.document;
+
+    const maxLines = Math.max(docA.lines.length, docB.lines.length);
+
+    for (let li = 0; li < maxLines; li++) {
+      const lineA = docA.lines[li];
+      const lineB = docB.lines[li];
+      const lineY = getLineY(li, layout);
+      const maxCells = Math.max(lineA?.cells.length ?? 0, lineB?.cells.length ?? 0);
+
+      for (let ci = 0; ci < maxCells; ci++) {
+        const cellA = lineA?.cells[ci];
+        const cellB = lineB?.cells[ci];
+
+        const dotsA = cellA?.dots ?? [
+          [false, false],
+          [false, false],
+          [false, false],
+        ];
+        const dotsB = cellB?.dots ?? [
+          [false, false],
+          [false, false],
+          [false, false],
+        ];
+
+        const hasActiveA = !isAllEmptyDots(dotsA);
+        const hasActiveB = !isAllEmptyDots(dotsB);
+        const hasDiff = !dotsEqual(dotsA, dotsB);
+
+        if (!hasDiff) continue;
+
+        const cellX = getCellX(ci, layout, this.document.charSpacing);
+
+        if (!hasActiveA && hasActiveB) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(39, 174, 96, 0.2)';
+          ctx.strokeStyle = '#27ae60';
+          ctx.lineWidth = 2;
+          ctx.fillRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+          ctx.strokeRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+          ctx.restore();
+        } else if (hasActiveA && !hasActiveB) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(231, 76, 60, 0.2)';
+          ctx.strokeStyle = '#e74c3c';
+          ctx.lineWidth = 2;
+          ctx.fillRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+          ctx.strokeRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+          ctx.restore();
+        } else {
+          ctx.save();
+          ctx.fillStyle = 'rgba(241, 196, 15, 0.2)';
+          ctx.strokeStyle = '#f1c40f';
+          ctx.lineWidth = 2;
+          ctx.fillRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+          ctx.strokeRect(cellX, lineY, layout.cellWidth, layout.cellHeight);
+          ctx.restore();
+        }
+
+        if (hasDiff) {
+          for (let dr = 0; dr < CELL_ROWS; dr++) {
+            for (let dc = 0; dc < CELL_COLS; dc++) {
+              const activeA = dotsA[dr]?.[dc] ?? false;
+              const activeB = dotsB[dr]?.[dc] ?? false;
+
+              if (activeA !== activeB) {
+                const displayDc = this.isMirror ? CELL_COLS - 1 - dc : dc;
+                const { x, y } = getDotCenter(
+                  dr,
+                  displayDc,
+                  cellX,
+                  lineY,
+                  this.document.dotRadius
+                );
+
+                ctx.save();
+                if (activeB) {
+                  ctx.fillStyle = 'rgba(39, 174, 96, 0.6)';
+                  ctx.strokeStyle = '#27ae60';
+                } else {
+                  ctx.fillStyle = 'rgba(231, 76, 60, 0.6)';
+                  ctx.strokeStyle = '#e74c3c';
+                }
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(x, y, this.document.dotRadius * 1.2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                ctx.restore();
+              }
+            }
+          }
+        }
+      }
     }
   }
 

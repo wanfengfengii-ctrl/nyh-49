@@ -56,6 +56,10 @@ import {
   VersionDiff,
   createInitialReviewState,
   ReviewStatus,
+  ReviewStatistics,
+  StatusLogEntry,
+  IssueFilterOptions,
+  DEFAULT_REVIEWERS,
 } from '../types/braille.js';
 import {
   textToBraille,
@@ -96,6 +100,13 @@ import {
   getSeverityLabel,
   getStatusLabel,
   getReviewStatusLabel,
+  calculateReviewStatistics,
+  getStatusLogActionLabel,
+  getAllStatusLogs,
+  getIssuesByPage,
+  getIssuesByAssignee,
+  formatDuration,
+  getDiffHighlights,
 } from '../utils/braille-converter.js';
 import type { BrailleCanvas } from './braille-canvas.js';
 
@@ -1289,6 +1300,30 @@ export class BraillePlateApp extends LitElement {
   @state()
   private _tempCharSpacing: number | null = null;
 
+  @state()
+  showStatsPanel: boolean = false;
+
+  @state()
+  diffViewMode: boolean = false;
+
+  @state()
+  diffVersionAIndex: number = 0;
+
+  @state()
+  diffVersionBIndex: number = 0;
+
+  @state()
+  diffHighlights: HighlightInfo[] = [];
+
+  @state()
+  searchKeyword: string = '';
+
+  @state()
+  showAssignPanel: boolean = false;
+
+  @state()
+  issueDetailTab: string = 'detail';
+
   @queryAll('braille-canvas')
   canvasElements!: NodeListOf<BrailleCanvas>;
 
@@ -1635,12 +1670,18 @@ export class BraillePlateApp extends LitElement {
     if (newIndex >= 0 && newIndex < this.paginatedDoc.pages.length) {
       this.currentPageIndex = newIndex;
       this.clearHighlights();
+      if (this.diffViewMode) {
+        this.computeDiffHighlights();
+      }
     }
   }
 
   private handleGoToPage(pageIndex: number) {
     if (pageIndex >= 0 && pageIndex < this.paginatedDoc.pages.length) {
       this.currentPageIndex = pageIndex;
+      if (this.diffViewMode) {
+        this.computeDiffHighlights();
+      }
     }
   }
 
@@ -1889,6 +1930,7 @@ export class BraillePlateApp extends LitElement {
     this.reviewState = {
       ...this.reviewState,
       issues: sampleIssues,
+      reviewers: DEFAULT_REVIEWERS,
       reviewStatus: 'in_review',
       signatures: [
         createReviewSignature({
@@ -1897,7 +1939,13 @@ export class BraillePlateApp extends LitElement {
           comment: '内容基本正确，请制作方按审校意见修改。',
         }),
       ],
-      currentUser: { id: 'user_1', name: '当前用户', role: '高级审校员' },
+      currentUser: DEFAULT_REVIEWERS[0],
+      selectedPageFilter: 'all',
+      selectedAssigneeFilter: 'all',
+      showIssueMarkers: true,
+      linkWithValidation: true,
+      linkWithPlateView: true,
+      showStatsPanel: false,
     };
   }
 
@@ -2055,6 +2103,102 @@ export class BraillePlateApp extends LitElement {
     this.reviewState = { ...this.reviewState, showIssueMarkers: !this.reviewState.showIssueMarkers };
   }
 
+  private handlePageFilterChange(e: Event) {
+    const target = e.target as HTMLSelectElement | any;
+    const value = target.value;
+    this.reviewState = {
+      ...this.reviewState,
+      selectedPageFilter: value === 'all' ? 'all' : Number(value),
+    };
+  }
+
+  private handleAssigneeFilterChange(e: Event) {
+    const target = e.target as HTMLSelectElement | any;
+    const value = target.value as string;
+    this.reviewState = { ...this.reviewState, selectedAssigneeFilter: value };
+  }
+
+  private handleSearchChange(e: Event) {
+    const target = e.target as HTMLInputElement | any;
+    this.searchKeyword = target.value ?? '';
+  }
+
+  private toggleStatsPanel() {
+    this.showStatsPanel = !this.showStatsPanel;
+  }
+
+  private toggleDiffView() {
+    this.diffViewMode = !this.diffViewMode;
+    if (this.diffViewMode && this.reviewState.versionHistory.length >= 2) {
+      this.diffVersionAIndex = 0;
+      this.diffVersionBIndex = this.reviewState.versionHistory.length - 1;
+      this.computeDiffHighlights();
+    } else {
+      this.diffHighlights = [];
+    }
+  }
+
+  private handleDiffVersionAChange(e: Event) {
+    const target = e.target as HTMLSelectElement | any;
+    this.diffVersionAIndex = Number(target.value);
+    this.computeDiffHighlights();
+  }
+
+  private handleDiffVersionBChange(e: Event) {
+    const target = e.target as HTMLSelectElement | any;
+    this.diffVersionBIndex = Number(target.value);
+    this.computeDiffHighlights();
+  }
+
+  private computeDiffHighlights() {
+    const versionA = this.reviewState.versionHistory[this.diffVersionAIndex];
+    const versionB = this.reviewState.versionHistory[this.diffVersionBIndex];
+    if (!versionA || !versionB) {
+      this.diffHighlights = [];
+      return;
+    }
+    this.diffHighlights = getDiffHighlights(
+      versionA.documentAfter,
+      versionB.documentAfter,
+      this.currentPageIndex
+    );
+  }
+
+  private getReviewStats(): ReviewStatistics {
+    return calculateReviewStatistics(
+      this.reviewState.issues,
+      this.reviewState.signatures,
+      this.reviewState.versionHistory
+    );
+  }
+
+  private handleLinkWithValidationToggle() {
+    this.reviewState = {
+      ...this.reviewState,
+      linkWithValidation: !this.reviewState.linkWithValidation,
+    };
+  }
+
+  private handleLinkWithPlateViewToggle() {
+    this.reviewState = {
+      ...this.reviewState,
+      linkWithPlateView: !this.reviewState.linkWithPlateView,
+    };
+  }
+
+  private getCombinedHighlights(): HighlightInfo[] {
+    if (!this.diffViewMode || this.diffHighlights.length === 0) {
+      return this.highlights;
+    }
+    return [...this.highlights, ...this.diffHighlights];
+  }
+
+  private getDiffDocument(): BrailleDocument | undefined {
+    if (!this.diffViewMode) return undefined;
+    const version = this.reviewState.versionHistory[this.diffVersionAIndex];
+    return version?.documentAfter;
+  }
+
   private openSignatureDialog() {
     this.signatureComment = '';
     this.showSignatureDialog = true;
@@ -2093,11 +2237,13 @@ export class BraillePlateApp extends LitElement {
   }
 
   private getFilteredIssues(): ReviewIssue[] {
-    return filterIssues(
-      this.reviewState.issues,
-      this.reviewState.selectedIssueFilter,
-      this.reviewState.selectedSeverityFilter
-    );
+    return filterIssues(this.reviewState.issues, {
+      status: this.reviewState.selectedIssueFilter,
+      severity: this.reviewState.selectedSeverityFilter,
+      pageIndex: this.reviewState.selectedPageFilter,
+      assigneeId: this.reviewState.selectedAssigneeFilter,
+      keyword: this.searchKeyword,
+    });
   }
 
   private formatTime(timestamp: number): string {
@@ -2596,9 +2742,11 @@ export class BraillePlateApp extends LitElement {
                     .pageIndex=${this.currentPageIndex}
                     .totalPages=${totalPages}
                     .calibration=${this.calibration}
-                    .highlights=${this.highlights}
+                    .highlights=${this.getCombinedHighlights()}
                     .reviewIssues=${this.reviewState.issues}
                     .showIssueMarkers=${this.reviewState.showIssueMarkers}
+                    ?diffMode=${this.diffViewMode}
+                    .diffDocument=${this.getDiffDocument()}
                     @dot-toggle=${this.handleDotToggle}
                   ></braille-canvas>
                 </div>
@@ -2616,9 +2764,11 @@ export class BraillePlateApp extends LitElement {
                     .pageIndex=${this.currentPageIndex}
                     .totalPages=${totalPages}
                     .calibration=${this.calibration}
-                    .highlights=${this.highlights}
+                    .highlights=${this.getCombinedHighlights()}
                     .reviewIssues=${this.reviewState.issues}
                     .showIssueMarkers=${this.reviewState.showIssueMarkers}
+                    ?diffMode=${this.diffViewMode}
+                    .diffDocument=${this.getDiffDocument()}
                     @dot-toggle=${this.handleDotToggle}
                   ></braille-canvas>
                 </div>
@@ -2644,9 +2794,11 @@ export class BraillePlateApp extends LitElement {
                           .pageIndex=${this.currentPageIndex}
                           .totalPages=${totalPages}
                           .calibration=${this.calibration}
-                          .highlights=${this.highlights}
+                          .highlights=${this.getCombinedHighlights()}
                           .reviewIssues=${this.reviewState.issues}
                           .showIssueMarkers=${this.reviewState.showIssueMarkers}
+                          ?diffMode=${this.diffViewMode}
+                          .diffDocument=${this.getDiffDocument()}
                           @dot-toggle=${this.handleDotToggle}
                         ></braille-canvas>
                       </div>
@@ -2669,9 +2821,11 @@ export class BraillePlateApp extends LitElement {
                           .pageIndex=${this.currentPageIndex}
                           .totalPages=${totalPages}
                           .calibration=${this.calibration}
-                          .highlights=${this.highlights}
+                          .highlights=${this.getCombinedHighlights()}
                           .reviewIssues=${this.reviewState.issues}
                           .showIssueMarkers=${this.reviewState.showIssueMarkers}
+                          ?diffMode=${this.diffViewMode}
+                          .diffDocument=${this.getDiffDocument()}
                           @dot-toggle=${this.handleDotToggle}
                         ></braille-canvas>
                       </div>
@@ -2751,6 +2905,30 @@ export class BraillePlateApp extends LitElement {
           </sl-tooltip>
         </div>
 
+        <div style="padding: 10px 14px; background: #f0f7ff; border-bottom: 1px solid #e0e8f0;">
+          <div style="font-size: 11px; font-weight: 600; color: #555; margin-bottom: 6px;">
+            🔗 联动展示
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-size: 11px; color: #666;">联动错误校验</span>
+              <sl-switch
+                size="small"
+                ?checked=${this.reviewState.linkWithValidation}
+                @sl-change=${this.handleLinkWithValidationToggle}
+              ></sl-switch>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <span style="font-size: 11px; color: #666;">联动铜版视图</span>
+              <sl-switch
+                size="small"
+                ?checked=${this.reviewState.linkWithPlateView}
+                @sl-change=${this.handleLinkWithPlateViewToggle}
+              ></sl-switch>
+            </div>
+          </div>
+        </div>
+
         <div class="review-tabs">
           <sl-tab-group @sl-tab-show=${(e: any) => { this.reviewTab = e.detail.name; }}>
             <sl-tab slot="nav" panel="issues" .active=${this.reviewTab === 'issues'}>
@@ -2768,6 +2946,10 @@ export class BraillePlateApp extends LitElement {
             <sl-tab slot="nav" panel="signatures">
               <sl-icon name="pen" style="margin-right: 4px;"></sl-icon>
               签字
+            </sl-tab>
+            <sl-tab slot="nav" panel="stats">
+              <sl-icon name="bar-chart" style="margin-right: 4px;"></sl-icon>
+              统计
             </sl-tab>
 
             <sl-tab-panel name="issues">
@@ -2806,14 +2988,29 @@ export class BraillePlateApp extends LitElement {
                     <sl-icon name=${this.reviewState.showIssueMarkers ? 'eye' : 'eye-slash'} slot="prefix"></sl-icon>
                     ${this.reviewState.showIssueMarkers ? '隐藏标记' : '显示标记'}
                   </sl-button>
+                  <sl-button size="small" variant="default" @click=${this.toggleStatsPanel}>
+                    <sl-icon name="bar-chart" slot="prefix"></sl-icon>
+                    统计
+                  </sl-button>
                 </div>
+
+                <sl-input
+                  size="small"
+                  placeholder="搜索问题标题或描述..."
+                  .value=${this.searchKeyword}
+                  @sl-input=${this.handleSearchChange}
+                  style="margin-bottom: 10px;"
+                  clearable
+                >
+                  <sl-icon name="search" slot="prefix"></sl-icon>
+                </sl-input>
 
                 <div class="review-filter-row">
                   <sl-select
                     size="small"
                     .value=${this.reviewState.selectedIssueFilter}
                     @sl-change=${this.handleStatusFilterChange}
-                    style="flex: 1; min-width: 100px;"
+                    style="flex: 1; min-width: 90px;"
                   >
                     <sl-option value="all">全部状态</sl-option>
                     <sl-option value="pending">待处理</sl-option>
@@ -2825,13 +3022,39 @@ export class BraillePlateApp extends LitElement {
                     size="small"
                     .value=${this.reviewState.selectedSeverityFilter}
                     @sl-change=${this.handleSeverityFilterChange}
-                    style="flex: 1; min-width: 100px;"
+                    style="flex: 1; min-width: 90px;"
                   >
                     <sl-option value="all">全部级别</sl-option>
                     <sl-option value="critical">严重</sl-option>
                     <sl-option value="major">重要</sl-option>
                     <sl-option value="minor">次要</sl-option>
                     <sl-option value="suggestion">建议</sl-option>
+                  </sl-select>
+                </div>
+
+                <div class="review-filter-row">
+                  <sl-select
+                    size="small"
+                    .value=${String(this.reviewState.selectedPageFilter)}
+                    @sl-change=${this.handlePageFilterChange}
+                    style="flex: 1; min-width: 90px;"
+                  >
+                    <sl-option value="all">全部页码</sl-option>
+                    ${this.paginatedDoc.pages.map((_, idx) => html`
+                      <sl-option value=${idx}>第${idx + 1}页</sl-option>
+                    `)}
+                  </sl-select>
+                  <sl-select
+                    size="small"
+                    .value=${this.reviewState.selectedAssigneeFilter}
+                    @sl-change=${this.handleAssigneeFilterChange}
+                    style="flex: 1; min-width: 90px;"
+                  >
+                    <sl-option value="all">全部处理人</sl-option>
+                    <sl-option value="unassigned">未分配</sl-option>
+                    ${this.reviewState.reviewers.map((r) => html`
+                      <sl-option value=${r.id}>${r.name}</sl-option>
+                    `)}
                   </sl-select>
                 </div>
 
@@ -2894,32 +3117,33 @@ export class BraillePlateApp extends LitElement {
                   审校活动时间线
                 </div>
                 <div class="timeline">
-                  ${this.reviewState.issues.slice().sort((a, b) => b.createdAt - a.createdAt).flatMap((issue) => [
-                    html`
-                      <div class="timeline-item action-status">
+                  ${getAllStatusLogs(this.reviewState.issues).map((log) => {
+                    const issue = this.reviewState.issues.find((i) => i.id === log.issueId);
+                    const issueIndex = issue ? this.getIssueIndex(issue.id) : 0;
+                    return html`
+                      <div class="timeline-item action-${log.action === 'created' ? 'status' : log.action === 'status_changed' ? 'status' : log.action === 'assignee_changed' ? 'assign' : 'comment'}">
                         <div class="timeline-content">
                           <div class="timeline-author">
-                            ${issue.reporterName}
-                            <span class="timeline-time">${this.formatTime(issue.createdAt)}</span>
+                            ${log.authorName}
+                            <span class="timeline-time">${this.formatTime(log.timestamp)}</span>
                           </div>
                           <div class="timeline-text">
-                            创建了问题 <b>#${this.getIssueIndex(issue.id)} ${issue.title}</b>
+                            ${issue ? html`<span style="color: #667eea; font-weight: 600;">#${issueIndex} ${issue.title}</span> - ` : ''}
+                            ${log.description}
+                            ${log.oldValue && log.newValue
+                              ? html`
+                                  <div style="margin-top: 4px; font-size: 11px;">
+                                    <span style="color: #e74c3c; text-decoration: line-through;">${log.oldValue}</span>
+                                    <span style="margin: 0 6px; color: #999;">→</span>
+                                    <span style="color: #27ae60; font-weight: 500;">${log.newValue}</span>
+                                  </div>
+                                `
+                              : ''}
                           </div>
                         </div>
                       </div>
-                    `,
-                    ...issue.comments.map((comment) => html`
-                      <div class="timeline-item action-comment">
-                        <div class="timeline-content">
-                          <div class="timeline-author">
-                            ${comment.authorName}
-                            <span class="timeline-time">${this.formatTime(comment.timestamp)}</span>
-                          </div>
-                          <div class="timeline-text">${comment.content}</div>
-                        </div>
-                      </div>
-                    `)
-                  ])}
+                    `;
+                  })}
                 </div>
               </div>
             </sl-tab-panel>
@@ -2931,7 +3155,59 @@ export class BraillePlateApp extends LitElement {
                     <sl-icon name="layout-split" slot="prefix"></sl-icon>
                     版本对比
                   </sl-button>
+                  <sl-button
+                    size="small"
+                    variant=${this.diffViewMode ? 'success' : 'default'}
+                    @click=${this.toggleDiffView}
+                    ?disabled=${this.reviewState.versionHistory.length < 2}
+                  >
+                    <sl-icon name=${this.diffViewMode ? 'eye' : 'eye-slash'} slot="prefix"></sl-icon>
+                    ${this.diffViewMode ? '关闭差异' : '差异视图'}
+                  </sl-button>
                 </div>
+
+                ${this.diffViewMode && this.reviewState.versionHistory.length >= 2
+                  ? html`
+                      <div style="margin-bottom: 12px; padding: 10px; background: #f8f9fa; border-radius: 6px;">
+                        <div style="font-size: 12px; font-weight: 600; color: #555; margin-bottom: 8px;">
+                          差异版本选择
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                          <div>
+                            <div style="font-size: 11px; color: #888; margin-bottom: 4px;">基准版本</div>
+                            <sl-select size="small" .value=${String(this.diffVersionAIndex)} @sl-change=${this.handleDiffVersionAChange}>
+                              ${this.reviewState.versionHistory.map((v, idx) => html`
+                                <sl-option value=${idx}>v${idx + 1} - ${v.description.slice(0, 12)}...</sl-option>
+                              `)}
+                            </sl-select>
+                          </div>
+                          <div>
+                            <div style="font-size: 11px; color: #888; margin-bottom: 4px;">对比版本</div>
+                            <sl-select size="small" .value=${String(this.diffVersionBIndex)} @sl-change=${this.handleDiffVersionBChange}>
+                              ${this.reviewState.versionHistory.map((v, idx) => html`
+                                <sl-option value=${idx}>v${idx + 1} - ${v.description.slice(0, 12)}...</sl-option>
+                              `)}
+                            </sl-select>
+                          </div>
+                        </div>
+                        <div style="margin-top: 8px; font-size: 11px; color: #666;">
+                          <span style="display: inline-flex; align-items: center; gap: 4px; margin-right: 12px;">
+                            <span style="display: inline-block; width: 10px; height: 10px; background: #27ae60; border-radius: 2px;"></span>
+                            新增
+                          </span>
+                          <span style="display: inline-flex; align-items: center; gap: 4px; margin-right: 12px;">
+                            <span style="display: inline-block; width: 10px; height: 10px; background: #e74c3c; border-radius: 2px;"></span>
+                            删除
+                          </span>
+                          <span style="display: inline-flex; align-items: center; gap: 4px;">
+                            <span style="display: inline-block; width: 10px; height: 10px; background: #f1c40f; border-radius: 2px;"></span>
+                            修改
+                          </span>
+                        </div>
+                      </div>
+                    `
+                  : ''
+                }
 
                 ${this.reviewState.versionHistory.length === 0
                   ? html`
@@ -2943,18 +3219,21 @@ export class BraillePlateApp extends LitElement {
                     `
                   : html`
                       <div class="version-list">
-                        ${this.reviewState.versionHistory.slice().reverse().map((version) => html`
-                          <div class="version-item">
-                            <div class="version-header">
-                              <span class="version-desc">${version.description}</span>
-                              <span class="version-time">${this.formatTime(version.timestamp)}</span>
+                        ${this.reviewState.versionHistory.slice().reverse().map((version, reverseIdx) => {
+                          const idx = this.reviewState.versionHistory.length - 1 - reverseIdx;
+                          return html`
+                            <div class="version-item ${this.diffViewMode && (idx === this.diffVersionAIndex || idx === this.diffVersionBIndex) ? 'selected' : ''}">
+                              <div class="version-header">
+                                <span class="version-desc">v${idx + 1} ${version.description}</span>
+                                <span class="version-time">${this.formatTime(version.timestamp)}</span>
+                              </div>
+                              <div class="version-author">${version.author}</div>
+                              <div class="version-changes">
+                                ${version.modifiedCells.length} 处修改
+                              </div>
                             </div>
-                            <div class="version-author">${version.author}</div>
-                            <div class="version-changes">
-                              ${version.modifiedCells.length} 处修改
-                            </div>
-                          </div>
-                        `)}
+                          `;
+                        })}
                       </div>
                     `
                 }
@@ -3028,6 +3307,112 @@ export class BraillePlateApp extends LitElement {
                       </div>
                     `
                 }
+              </div>
+            </sl-tab-panel>
+
+            <sl-tab-panel name="stats">
+              <div class="review-content">
+                <div class="review-summary">
+                  <div style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">
+                    📊 审校统计看板
+                  </div>
+                </div>
+
+                ${(() => {
+                  const stats = this.getReviewStats();
+                  return html`
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+                      <div style="background: #f0f7ff; padding: 12px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 24px; font-weight: 700; color: #3498db;">${stats.totalIssues}</div>
+                        <div style="font-size: 12px; color: #666; margin-top: 4px;">总问题数</div>
+                      </div>
+                      <div style="background: #eafaf1; padding: 12px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 24px; font-weight: 700; color: #27ae60;">${stats.resolvedIssues}</div>
+                        <div style="font-size: 12px; color: #666; margin-top: 4px;">已解决</div>
+                      </div>
+                      <div style="background: #fef5e7; padding: 12px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 24px; font-weight: 700; color: #e67e22;">${stats.pendingIssues}</div>
+                        <div style="font-size: 12px; color: #666; margin-top: 4px;">待处理</div>
+                      </div>
+                      <div style="background: #fdedec; padding: 12px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 24px; font-weight: 700; color: #e74c3c;">${stats.confirmedIssues}</div>
+                        <div style="font-size: 12px; color: #666; margin-top: 4px;">进行中</div>
+                      </div>
+                    </div>
+
+                    <div style="margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px;">
+                      <div style="font-size: 12px; font-weight: 600; color: #555; margin-bottom: 8px;">
+                        按严重级别
+                      </div>
+                      <div style="display: flex; flex-direction: column; gap: 6px;">
+                        <div>
+                          <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px;">
+                            <span style="color: #e74c3c;">🔴 严重</span>
+                            <span>${stats.criticalIssues}</span>
+                          </div>
+                          <div style="height: 6px; background: #eee; border-radius: 3px; overflow: hidden;">
+                            <div style="height: 100%; width: ${stats.totalIssues > 0 ? (stats.criticalIssues / stats.totalIssues * 100) : 0}%; background: #e74c3c; border-radius: 3px;"></div>
+                          </div>
+                        </div>
+                        <div>
+                          <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px;">
+                            <span style="color: #e67e22;">🟠 一般</span>
+                            <span>${stats.majorIssues}</span>
+                          </div>
+                          <div style="height: 6px; background: #eee; border-radius: 3px; overflow: hidden;">
+                            <div style="height: 100%; width: ${stats.totalIssues > 0 ? (stats.majorIssues / stats.totalIssues * 100) : 0}%; background: #e67e22; border-radius: 3px;"></div>
+                          </div>
+                        </div>
+                        <div>
+                          <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px;">
+                            <span style="color: #f1c40f;">🟡 轻微</span>
+                            <span>${stats.minorIssues}</span>
+                          </div>
+                          <div style="height: 6px; background: #eee; border-radius: 3px; overflow: hidden;">
+                            <div style="height: 100%; width: ${stats.totalIssues > 0 ? (stats.minorIssues / stats.totalIssues * 100) : 0}%; background: #f1c40f; border-radius: 3px;"></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style="margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px;">
+                      <div style="font-size: 12px; font-weight: 600; color: #555; margin-bottom: 8px;">
+                        按处理人
+                      </div>
+                      <div style="display: flex; flex-direction: column; gap: 6px;">
+                        ${Object.entries(stats.issuesByAssignee).map(([assigneeId, count]) => {
+                          const reviewer = this.reviewState.reviewers.find(r => r.id === assigneeId);
+                          const name = reviewer ? reviewer.name : (assigneeId === 'unassigned' ? '未分配' : assigneeId);
+                          return html`
+                            <div>
+                              <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px;">
+                                <span>${name}</span>
+                                <span>${count} 个</span>
+                              </div>
+                              <div style="height: 6px; background: #eee; border-radius: 3px; overflow: hidden;">
+                                <div style="height: 100%; width: ${stats.totalIssues > 0 ? (count / stats.totalIssues * 100) : 0}%; background: #3498db; border-radius: 3px;"></div>
+                              </div>
+                            </div>
+                          `;
+                        })}
+                      </div>
+                    </div>
+
+                    <div style="padding: 12px; background: #f8f9fa; border-radius: 8px;">
+                      <div style="font-size: 12px; font-weight: 600; color: #555; margin-bottom: 8px;">
+                        版本与签字
+                      </div>
+                      <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
+                        <span>版本记录：${stats.versionCount}</span>
+                        <span>签字记录：${stats.totalSignatures}</span>
+                      </div>
+                      <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666; margin-top: 4px;">
+                        <span>页数：${Object.keys(stats.issuesByPage).length}</span>
+                        <span>解决率：${Math.round(stats.resolutionRate * 100)}%</span>
+                      </div>
+                    </div>
+                  `;
+                })()}
               </div>
             </sl-tab-panel>
           </sl-tab-group>
@@ -3218,27 +3603,65 @@ export class BraillePlateApp extends LitElement {
 
           <div class="issue-detail-section-title">
             <sl-icon name="chat-dots"></sl-icon>
-            讨论记录 (${this.selectedIssue.comments.length})
+            处理人分配
           </div>
 
-          <div class="timeline" style="max-height: 250px; overflow-y: auto;">
-            <div class="timeline-item action-status">
-              <div class="timeline-content">
-                <div class="timeline-author">
-                  ${this.selectedIssue.reporterName}
-                  <span class="timeline-time">${this.formatTime(this.selectedIssue.createdAt)}</span>
+          <div style="padding: 10px; background: #f8f9fa; border-radius: 6px; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div>
+                <div style="font-size: 12px; color: #888; margin-bottom: 4px;">当前处理人</div>
+                <div style="font-size: 14px; font-weight: 600; color: #333;">
+                  ${this.selectedIssue.assigneeName || '未分配'}
                 </div>
-                <div class="timeline-text">创建了此问题</div>
               </div>
+              <sl-dropdown>
+                <sl-button size="small" variant="primary" slot="trigger" caret>
+                  <sl-icon name="person-plus" slot="prefix"></sl-icon>
+                  分配处理人
+                </sl-button>
+                <sl-menu>
+                  ${this.reviewState.reviewers.map(r => html`
+                    <sl-menu-item @click=${() => this.handleAssignIssue(r.id, r.name)}>
+                      <sl-icon name="person" slot="prefix"></sl-icon>
+                      ${r.name}（${r.role}）
+                    </sl-menu-item>
+                  `)}
+                  <sl-divider></sl-divider>
+                  <sl-menu-item @click=${() => this.handleAssignIssue('', '')}>
+                    <sl-icon name="person-x" slot="prefix"></sl-icon>
+                    取消分配
+                  </sl-menu-item>
+                </sl-menu>
+              </sl-dropdown>
             </div>
-            ${this.selectedIssue.comments.map((comment) => html`
-              <div class="timeline-item action-comment">
+          </div>
+
+          <div class="issue-detail-section-title">
+            <sl-icon name="clock-history"></sl-icon>
+            状态流转日志 (${this.selectedIssue.statusLogs.length})
+          </div>
+
+          <div class="timeline" style="max-height: 280px; overflow-y: auto;">
+            ${this.selectedIssue.statusLogs.slice().reverse().map((log: StatusLogEntry) => html`
+              <div class="timeline-item action-${log.action.replace(/_/g, '-')}">
                 <div class="timeline-content">
                   <div class="timeline-author">
-                    ${comment.authorName}
-                    <span class="timeline-time">${this.formatTime(comment.timestamp)}</span>
+                    ${log.authorName}
+                    <span class="timeline-time">${this.formatTime(log.timestamp)}</span>
                   </div>
-                  <div class="timeline-text">${comment.content}</div>
+                  <div class="timeline-text">
+                    ${getStatusLogActionLabel(log.action)}
+                    ${log.oldValue && log.newValue ? html`
+                      <span style="font-size: 12px; color: #888;">
+                        （<span style="text-decoration: line-through;">${log.oldValue}</span> → <strong>${log.newValue}</strong>）
+                      </span>
+                    ` : log.newValue ? html`
+                      <span style="font-size: 12px; color: #888;">（${log.newValue}）</span>
+                    ` : ''}
+                  </div>
+                  ${log.action === 'comment_added' && log.description ? html`
+                    <div class="timeline-comment">${log.description}</div>
+                  ` : ''}
                 </div>
               </div>
             `)}
