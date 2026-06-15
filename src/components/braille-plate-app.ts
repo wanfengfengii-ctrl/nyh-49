@@ -1266,6 +1266,24 @@ export class BraillePlateApp extends LitElement {
   reviewSidebarOpen: boolean = true;
 
   @state()
+  isSelectingIssuePosition: boolean = false;
+
+  @state()
+  newIssueLineIndex: number = 0;
+
+  @state()
+  newIssueCellIndex: number | undefined = undefined;
+
+  @state()
+  newIssueDotRow: number | undefined = undefined;
+
+  @state()
+  newIssueDotCol: number | undefined = undefined;
+
+  @state()
+  private _lastVersionTimestamp: number = 0;
+
+  @state()
   private _tempLineSpacing: number | null = null;
 
   @state()
@@ -1485,6 +1503,32 @@ export class BraillePlateApp extends LitElement {
     const customEvent = e as CustomEvent<{ position: DotPosition; value: boolean; pageIndex: number }>;
     const { position, pageIndex } = customEvent.detail;
 
+    if (this.isSelectingIssuePosition) {
+      e.stopPropagation();
+      e.preventDefault();
+      const pageLineRange = this.paginatedDoc.pageLineRanges[pageIndex];
+      const globalLineIndex = pageLineRange ? pageLineRange.startLine + position.lineIndex : position.lineIndex;
+      this.newIssueLineIndex = globalLineIndex;
+      this.newIssueCellIndex = position.cellIndex;
+      this.newIssueDotRow = position.dotRow;
+      this.newIssueDotCol = position.dotCol;
+      this.isSelectingIssuePosition = false;
+
+      const highlight: HighlightInfo = {
+        pageIndex: pageIndex,
+        lineIndex: position.lineIndex,
+        cellIndex: position.cellIndex,
+        dotRow: position.dotRow,
+        dotCol: position.dotCol,
+        type: 'selection',
+        color: 'rgba(155, 89, 182, 0.5)',
+      };
+      this.highlights = [highlight];
+      this.requestUpdate();
+      setTimeout(() => this.resumeAddIssueDialog(), 200);
+      return;
+    }
+
     const pageLineRange = this.paginatedDoc.pageLineRanges[pageIndex];
     const globalLineIndex = pageLineRange ? pageLineRange.startLine + position.lineIndex : position.lineIndex;
     const globalPosition: DotPosition = {
@@ -1506,6 +1550,18 @@ export class BraillePlateApp extends LitElement {
       cloneDocument(this.brailleDoc),
       { position: globalPosition, value: customEvent.detail.value }
     );
+
+    const now = Date.now();
+    if (now - this._lastVersionTimestamp > 30000) {
+      const versionDiff = createVersionDiff({
+        description: `点位修改: ${dotLabel}`,
+        documentBefore: before,
+        documentAfter: cloneDocument(this.brailleDoc),
+        author: this.reviewState.currentUser.name,
+      });
+      this.reviewState = addVersionToState(this.reviewState, versionDiff);
+      this._lastVersionTimestamp = now;
+    }
 
     this.revalidate();
     this.requestUpdate();
@@ -1854,11 +1910,26 @@ export class BraillePlateApp extends LitElement {
     this.newIssueDescription = '';
     this.newIssueSeverity = 'major';
     this.newIssueAssignee = '';
+    this.newIssueLineIndex = 0;
+    this.newIssueCellIndex = undefined;
+    this.newIssueDotRow = undefined;
+    this.newIssueDotCol = undefined;
+    this.isSelectingIssuePosition = false;
     this.showAddIssueDialog = true;
   }
 
   private closeAddIssueDialog() {
     this.showAddIssueDialog = false;
+    this.isSelectingIssuePosition = false;
+  }
+
+  private startSelectIssuePosition() {
+    this.isSelectingIssuePosition = true;
+    this.showAddIssueDialog = false;
+  }
+
+  private resumeAddIssueDialog() {
+    this.showAddIssueDialog = true;
   }
 
   private handleAddIssue() {
@@ -1869,8 +1940,12 @@ export class BraillePlateApp extends LitElement {
       description: this.newIssueDescription,
       severity: this.newIssueSeverity,
       pageIndex: this.currentPageIndex,
-      lineIndex: 0,
+      lineIndex: this.newIssueLineIndex,
+      cellIndex: this.newIssueCellIndex,
+      dotRow: this.newIssueDotRow,
+      dotCol: this.newIssueDotCol,
       reporter: this.reviewState.currentUser,
+      assignee: this.newIssueAssignee ? { id: this.newIssueAssignee, name: this.newIssueAssignee === 'user_2' ? '李制作' : '王审校', role: '处理人' } : undefined,
       versionSnapshot: cloneDocument(this.brailleDoc),
     });
 
@@ -1885,6 +1960,7 @@ export class BraillePlateApp extends LitElement {
     this.reviewState = addVersionToState(this.reviewState, versionDiff);
 
     this.closeAddIssueDialog();
+    this.clearHighlights();
   }
 
   private openIssueDetail(issue: ReviewIssue) {
@@ -2048,6 +2124,22 @@ export class BraillePlateApp extends LitElement {
     const historyList = getHistoryDescriptions(this.history);
 
     return html`
+      ${this.isSelectingIssuePosition ? html`
+        <div class="position-selecting-overlay" style="position: fixed; top: 0; left: 0; right: 0; z-index: 9999; padding: 16px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4); display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 500;">
+            <sl-icon name="hand-index-thumb" style="font-size: 22px;"></sl-icon>
+            <div>
+              <div style="font-weight: 600;">正在选择问题位置</div>
+              <div style="font-size: 12px; opacity: 0.9; font-weight: 400;">请在下方任意盲文画布上点击具体出错的点位</div>
+            </div>
+          </div>
+          <sl-button size="small" variant="neutral" @click=${() => { this.isSelectingIssuePosition = false; this.showAddIssueDialog = true; }}>
+            <sl-icon name="x" slot="prefix"></sl-icon>
+            取消选择
+          </sl-button>
+        </div>
+      ` : ''}
+
       <div class="app-header">
         <div class="header-row">
           <h1 class="header-title">
@@ -2946,7 +3038,7 @@ export class BraillePlateApp extends LitElement {
         .open=${this.showAddIssueDialog}
         @sl-request-close=${this.closeAddIssueDialog}
         label="新建审校问题"
-        style="--width: 500px;"
+        style="--width: 520px;"
       >
         <div style="padding: 8px 0;">
           <div class="control-row">
@@ -2995,9 +3087,51 @@ export class BraillePlateApp extends LitElement {
             </sl-radio-group>
           </div>
 
-          <div class="tip-box" style="margin-top: 12px;">
-            💡 <b>提示：</b>问题将记录在当前页面（第${this.currentPageIndex + 1}页），点击问题可快速定位。
+          <div class="control-row">
+            <div class="control-label">
+              <span>分配处理人</span>
+            </div>
+            <sl-select
+              .value=${this.newIssueAssignee}
+              @sl-change=${(e: any) => { this.newIssueAssignee = e.target.value; }}
+              placeholder="选择处理人（可选）"
+              clearable
+            >
+              <sl-option value="user_2">李制作（制版工程师）</sl-option>
+              <sl-option value="user_3">王审校（审校专员）</sl-option>
+              <sl-option value="user_1">张设计（设计师）</sl-option>
+            </sl-select>
           </div>
+
+          <div class="control-row">
+            <div class="control-label">
+              <span>问题位置</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: flex-start;">
+              <div style="flex: 1; padding: 10px 12px; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef; font-size: 13px; line-height: 1.6;">
+                <div><b>页面：</b>第${this.currentPageIndex + 1}页</div>
+                <div><b>行：</b>第${this.newIssueLineIndex + 1}行${this.newIssueCellIndex !== undefined ? `，<b>单元格：</b>第${this.newIssueCellIndex + 1}格` : ''}</div>
+                ${this.newIssueDotRow !== undefined && this.newIssueDotCol !== undefined
+                  ? `<div><b>点位：</b>第${this.newIssueDotRow + 1}行${String.fromCharCode(65 + this.newIssueDotCol)}列</div>`
+                  : ''}
+              </div>
+              <sl-button variant="default" @click=${this.startSelectIssuePosition}>
+                <sl-icon name="pin-map" slot="prefix"></sl-icon>
+                点击画布选择
+              </sl-button>
+            </div>
+          </div>
+
+          <div class="tip-box" style="margin-top: 12px;">
+            💡 <b>提示：</b>点击「点击画布选择」按钮，然后在盲文画布上点击具体的点位来精确标记问题位置。
+          </div>
+
+          ${this.isSelectingIssuePosition ? html`
+            <div class="position-selecting-banner" style="margin-top: 12px; padding: 12px 16px; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; border-radius: 8px; font-weight: 500;">
+              <sl-icon name="hand-index-thumb" style="margin-right: 6px; vertical-align: -2px;"></sl-icon>
+              请在左侧盲文画布上点击具体出错的点位...
+            </div>
+          ` : ''}
         </div>
         <sl-button slot="footer" variant="default" @click=${this.closeAddIssueDialog}>取消</sl-button>
         <sl-button slot="footer" variant="primary" @click=${this.handleAddIssue} ?disabled=${!this.newIssueTitle.trim()}>
@@ -3031,8 +3165,11 @@ export class BraillePlateApp extends LitElement {
               </div>
             </div>
             <div class="issue-detail-meta-item">
-              <div class="issue-detail-meta-label">所在页面</div>
-              <div class="issue-detail-meta-value">第${this.selectedIssue.pageIndex + 1}页 第${this.selectedIssue.lineIndex + 1}行</div>
+              <div class="issue-detail-meta-label">问题位置</div>
+              <div class="issue-detail-meta-value">
+                第${this.selectedIssue.pageIndex + 1}页 第${this.selectedIssue.lineIndex + 1}行${this.selectedIssue.cellIndex !== undefined ? `，第${this.selectedIssue.cellIndex + 1}格` : ''}
+                ${this.selectedIssue.dotRow !== undefined && this.selectedIssue.dotCol !== undefined ? `，点${this.selectedIssue.dotRow + 1}${String.fromCharCode(65 + this.selectedIssue.dotCol)}` : ''}
+              </div>
             </div>
             <div class="issue-detail-meta-item">
               <div class="issue-detail-meta-label">报告人</div>
@@ -3040,7 +3177,34 @@ export class BraillePlateApp extends LitElement {
             </div>
             <div class="issue-detail-meta-item">
               <div class="issue-detail-meta-label">处理人</div>
-              <div class="issue-detail-meta-value">${this.selectedIssue.assigneeName || '未分配'}</div>
+              <div class="issue-detail-meta-value" style="display: flex; gap: 8px; align-items: center;">
+                <span>${this.selectedIssue.assigneeName || '未分配'}</span>
+                <sl-dropdown>
+                  <sl-button size="small" variant="default" slot="trigger" caret>
+                    <sl-icon name="person-plus" slot="prefix"></sl-icon>
+                    分配
+                  </sl-button>
+                  <sl-menu>
+                    <sl-menu-item @click=${() => this.handleAssignIssue('user_2', '李制作')}>
+                      <sl-icon name="person" slot="prefix"></sl-icon>
+                      李制作（制版工程师）
+                    </sl-menu-item>
+                    <sl-menu-item @click=${() => this.handleAssignIssue('user_3', '王审校')}>
+                      <sl-icon name="person" slot="prefix"></sl-icon>
+                      王审校（审校专员）
+                    </sl-menu-item>
+                    <sl-menu-item @click=${() => this.handleAssignIssue('user_1', '张设计')}>
+                      <sl-icon name="person" slot="prefix"></sl-icon>
+                      张设计（设计师）
+                    </sl-menu-item>
+                    <sl-divider></sl-divider>
+                    <sl-menu-item @click=${() => this.handleAssignIssue('', '')}>
+                      <sl-icon name="person-x" slot="prefix"></sl-icon>
+                      取消分配
+                    </sl-menu-item>
+                  </sl-menu>
+                </sl-dropdown>
+              </div>
             </div>
           </div>
 
