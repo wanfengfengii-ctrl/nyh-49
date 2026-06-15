@@ -111,3 +111,98 @@ export const DEFAULT_CALIBRATION: CalibrationConfig = {
   holeColor: '#e74c3c',
   marginColor: '#27ae60',
 };
+
+export type ReviewIssueStatus = 'pending' | 'confirmed' | 'rejected' | 'resolved';
+export type ReviewIssueSeverity = 'critical' | 'major' | 'minor' | 'suggestion';
+export type ReviewStatus = 'draft' | 'in_review' | 'approved' | 'rejected';
+
+export interface Reviewer {
+  id: string;
+  name: string;
+  avatar?: string;
+  role: string;
+}
+
+export interface ReviewComment {
+  id: string;
+  issueId: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  timestamp: number;
+  attachments?: string[];
+}
+
+export interface ReviewIssue {
+  id: string;
+  title: string;
+  description: string;
+  status: ReviewIssueStatus;
+  severity: ReviewIssueSeverity;
+  pageIndex: number;
+  lineIndex: number;
+  cellIndex?: number;
+  dotRow?: number;
+  dotCol?: number;
+  assigneeId?: string;
+  assigneeName?: string;
+  reporterId: string;
+  reporterName: string;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt?: number;
+  comments: ReviewComment[];
+  versionSnapshot?: BrailleDocument;
+  tags?: string[];
+}
+
+export interface ReviewSignature {
+  id: string;
+  reviewerId: string;
+  reviewerName: string;
+  reviewerRole: string;
+  timestamp: number;
+  signatureType: 'approval' | 'rejection';
+  comment?: string;
+}
+
+export interface VersionDiff {
+  versionId: string;
+  timestamp: number;
+  description: string;
+  documentBefore: BrailleDocument;
+  documentAfter: BrailleDocument;
+  modifiedCells: { lineIndex: number; cellIndex: number; dotsBefore: boolean[][]; dotsAfter: boolean[][] }[];
+  author: string;
+}
+
+export interface ReviewState {
+  issues: ReviewIssue[];
+  currentUser: Reviewer;
+  reviewStatus: ReviewStatus;
+  signatures: ReviewSignature[];
+  versionHistory: VersionDiff[];
+  activeIssueId?: string;
+  showIssueMarkers: boolean;
+  selectedIssueFilter: ReviewIssueStatus | 'all';
+  selectedSeverityFilter: ReviewIssueSeverity | 'all';
+}
+
+export const DEFAULT_REVIEWER: Reviewer = {
+  id: 'user_1',
+  name: '当前用户',
+  role: '审校员',
+};
+
+export function createInitialReviewState(): ReviewState {
+  return {
+    issues: [],
+    currentUser: DEFAULT_REVIEWER,
+    reviewStatus: 'draft',
+    signatures: [],
+    versionHistory: [],
+    showIssueMarkers: true,
+    selectedIssueFilter: 'all',
+    selectedSeverityFilter: 'all',
+  };
+}

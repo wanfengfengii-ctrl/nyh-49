@@ -9,7 +9,9 @@ import {
   CalibrationConfig,
   DEFAULT_CALIBRATION,
   HighlightInfo,
+  ReviewIssue,
 } from '../types/braille.js';
+import { getSeverityColor } from '../utils/braille-converter.js';
 import {
   calculateLayout,
   getLineY,
@@ -99,6 +101,12 @@ export class BrailleCanvas extends LitElement {
   @property({ type: Array })
   highlights: HighlightInfo[] = [];
 
+  @property({ type: Array })
+  reviewIssues: ReviewIssue[] = [];
+
+  @property({ type: Boolean })
+  showIssueMarkers: boolean = true;
+
   @query('canvas')
   canvasEl!: HTMLCanvasElement;
 
@@ -121,7 +129,9 @@ export class BrailleCanvas extends LitElement {
       changedProperties.has('hoveredDot') ||
       changedProperties.has('calibration') ||
       changedProperties.has('highlights') ||
-      changedProperties.has('pageIndex')
+      changedProperties.has('pageIndex') ||
+      changedProperties.has('reviewIssues') ||
+      changedProperties.has('showIssueMarkers')
     ) {
       this.renderCanvas();
     }
@@ -191,6 +201,9 @@ export class BrailleCanvas extends LitElement {
     this.drawPlateBorder(ctx);
     this.drawHighlights(ctx);
     this.drawCells(ctx);
+    if (this.showIssueMarkers) {
+      this.drawIssueMarkers(ctx);
+    }
   }
 
   private drawBackground(ctx: CanvasRenderingContext2D) {
@@ -408,6 +421,70 @@ export class BrailleCanvas extends LitElement {
         );
         ctx.restore();
       }
+    }
+  }
+
+  private drawIssueMarkers(ctx: CanvasRenderingContext2D) {
+    if (!this.reviewIssues || this.reviewIssues.length === 0) return;
+    const layout = calculateLayout(this.document, this.plateWidth, this.plateHeight);
+
+    const pageIssues = this.reviewIssues.filter(issue => issue.pageIndex === this.pageIndex);
+
+    for (const issue of pageIssues) {
+      if (issue.lineIndex < 0 || issue.lineIndex >= this.document.lines.length) continue;
+
+      const lineY = getLineY(issue.lineIndex, layout);
+      const color = getSeverityColor(issue.severity);
+
+      let cellX: number | null = null;
+      if (issue.cellIndex !== undefined && issue.cellIndex >= 0) {
+        const line = this.document.lines[issue.lineIndex];
+        if (issue.cellIndex < line.cells.length) {
+          cellX = getCellX(issue.cellIndex, layout, this.document.charSpacing);
+        }
+      }
+
+      ctx.save();
+
+      if (cellX !== null) {
+        const markerSize = 16;
+        const markerX = cellX + layout.cellWidth - markerSize / 2;
+        const markerY = lineY - markerSize / 2;
+
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+
+        ctx.beginPath();
+        ctx.arc(markerX, markerY, markerSize / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const issueIndex = this.reviewIssues.indexOf(issue) + 1;
+        ctx.fillText(String(issueIndex), markerX, markerY);
+      } else {
+        const markerSize = 12;
+        const markerX = layout.padding - markerSize - 4;
+        const markerY = lineY + layout.cellHeight / 2;
+
+        ctx.fillStyle = color;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+
+        ctx.beginPath();
+        ctx.moveTo(markerX - markerSize / 2, markerY - markerSize / 2);
+        ctx.lineTo(markerX + markerSize / 2, markerY);
+        ctx.lineTo(markerX - markerSize / 2, markerY + markerSize / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.restore();
     }
   }
 

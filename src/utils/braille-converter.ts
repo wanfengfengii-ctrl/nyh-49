@@ -13,6 +13,17 @@ import {
   DEFAULT_LINE_SPACING,
   DEFAULT_CHAR_SPACING,
   DEFAULT_PLATE_PADDING,
+  ReviewIssue,
+  ReviewComment,
+  ReviewIssueStatus,
+  ReviewIssueSeverity,
+  ReviewSignature,
+  VersionDiff,
+  ReviewState,
+  ReviewStatus,
+  Reviewer,
+  createInitialReviewState,
+  DEFAULT_REVIEWER,
 } from '../types/braille.js';
 import {
   LETTER_DOTS,
@@ -916,4 +927,281 @@ export function downloadCanvasImage(
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+export function createReviewIssue(params: {
+  title: string;
+  description: string;
+  severity: ReviewIssueSeverity;
+  pageIndex: number;
+  lineIndex: number;
+  cellIndex?: number;
+  dotRow?: number;
+  dotCol?: number;
+  reporter: Reviewer;
+  assignee?: Reviewer;
+  versionSnapshot?: BrailleDocument;
+  tags?: string[];
+}): ReviewIssue {
+  const now = Date.now();
+  return {
+    id: genId('issue'),
+    title: params.title,
+    description: params.description,
+    status: 'pending',
+    severity: params.severity,
+    pageIndex: params.pageIndex,
+    lineIndex: params.lineIndex,
+    cellIndex: params.cellIndex,
+    dotRow: params.dotRow,
+    dotCol: params.dotCol,
+    reporterId: params.reporter.id,
+    reporterName: params.reporter.name,
+    assigneeId: params.assignee?.id,
+    assigneeName: params.assignee?.name,
+    createdAt: now,
+    updatedAt: now,
+    comments: [],
+    versionSnapshot: params.versionSnapshot ? cloneDocument(params.versionSnapshot) : undefined,
+    tags: params.tags,
+  };
+}
+
+export function addReviewComment(
+  issue: ReviewIssue,
+  author: Reviewer,
+  content: string
+): ReviewIssue {
+  const comment: ReviewComment = {
+    id: genId('comment'),
+    issueId: issue.id,
+    authorId: author.id,
+    authorName: author.name,
+    content,
+    timestamp: Date.now(),
+  };
+  return {
+    ...issue,
+    comments: [...issue.comments, comment],
+    updatedAt: Date.now(),
+  };
+}
+
+export function updateIssueStatus(
+  issue: ReviewIssue,
+  status: ReviewIssueStatus,
+  resolver?: Reviewer
+): ReviewIssue {
+  return {
+    ...issue,
+    status,
+    updatedAt: Date.now(),
+    resolvedAt: status === 'resolved' || status === 'confirmed' ? Date.now() : undefined,
+  };
+}
+
+export function assignIssue(issue: ReviewIssue, assignee: Reviewer): ReviewIssue {
+  return {
+    ...issue,
+    assigneeId: assignee.id,
+    assigneeName: assignee.name,
+    updatedAt: Date.now(),
+  };
+}
+
+export function filterIssues(
+  issues: ReviewIssue[],
+  statusFilter: ReviewIssueStatus | 'all',
+  severityFilter: ReviewIssueSeverity | 'all',
+  pageIndex?: number
+): ReviewIssue[] {
+  return issues.filter((issue) => {
+    if (statusFilter !== 'all' && issue.status !== statusFilter) return false;
+    if (severityFilter !== 'all' && issue.severity !== severityFilter) return false;
+    if (pageIndex !== undefined && issue.pageIndex !== pageIndex) return false;
+    return true;
+  });
+}
+
+export function getIssueCounts(issues: ReviewIssue[]): {
+  total: number;
+  pending: number;
+  confirmed: number;
+  rejected: number;
+  resolved: number;
+  critical: number;
+  major: number;
+  minor: number;
+  suggestion: number;
+} {
+  const counts = {
+    total: issues.length,
+    pending: 0,
+    confirmed: 0,
+    rejected: 0,
+    resolved: 0,
+    critical: 0,
+    major: 0,
+    minor: 0,
+    suggestion: 0,
+  };
+  for (const issue of issues) {
+    counts[issue.status]++;
+    counts[issue.severity]++;
+  }
+  return counts;
+}
+
+export function createVersionDiff(params: {
+  description: string;
+  documentBefore: BrailleDocument;
+  documentAfter: BrailleDocument;
+  author: string;
+}): VersionDiff {
+  const modifiedCells: VersionDiff['modifiedCells'] = [];
+  const maxLines = Math.max(params.documentBefore.lines.length, params.documentAfter.lines.length);
+
+  for (let li = 0; li < maxLines; li++) {
+    const lineBefore = params.documentBefore.lines[li];
+    const lineAfter = params.documentAfter.lines[li];
+    const maxCells = Math.max(lineBefore?.cells.length ?? 0, lineAfter?.cells.length ?? 0);
+
+    for (let ci = 0; ci < maxCells; ci++) {
+      const cellBefore = lineBefore?.cells[ci];
+      const cellAfter = lineAfter?.cells[ci];
+
+      const dotsBefore = cellBefore?.dots ?? createEmptyDots();
+      const dotsAfter = cellAfter?.dots ?? createEmptyDots();
+
+      if (!dotsEqual(dotsBefore, dotsAfter)) {
+        modifiedCells.push({
+          lineIndex: li,
+          cellIndex: ci,
+          dotsBefore: cloneDots(dotsBefore),
+          dotsAfter: cloneDots(dotsAfter),
+        });
+      }
+    }
+  }
+
+  return {
+    versionId: genId('version'),
+    timestamp: Date.now(),
+    description: params.description,
+    documentBefore: cloneDocument(params.documentBefore),
+    documentAfter: cloneDocument(params.documentAfter),
+    modifiedCells,
+    author: params.author,
+  };
+}
+
+export function createReviewSignature(params: {
+  reviewer: Reviewer;
+  signatureType: 'approval' | 'rejection';
+  comment?: string;
+}): ReviewSignature {
+  return {
+    id: genId('signature'),
+    reviewerId: params.reviewer.id,
+    reviewerName: params.reviewer.name,
+    reviewerRole: params.reviewer.role,
+    timestamp: Date.now(),
+    signatureType: params.signatureType,
+    comment: params.comment,
+  };
+}
+
+export function updateReviewStatus(state: ReviewState, status: ReviewStatus): ReviewState {
+  return {
+    ...state,
+    reviewStatus: status,
+  };
+}
+
+export function addIssueToState(state: ReviewState, issue: ReviewIssue): ReviewState {
+  return {
+    ...state,
+    issues: [...state.issues, issue],
+  };
+}
+
+export function updateIssueInState(state: ReviewState, issue: ReviewIssue): ReviewState {
+  return {
+    ...state,
+    issues: state.issues.map((i) => (i.id === issue.id ? issue : i)),
+  };
+}
+
+export function addSignatureToState(state: ReviewState, signature: ReviewSignature): ReviewState {
+  return {
+    ...state,
+    signatures: [...state.signatures, signature],
+  };
+}
+
+export function addVersionToState(state: ReviewState, version: VersionDiff): ReviewState {
+  return {
+    ...state,
+    versionHistory: [...state.versionHistory, version],
+  };
+}
+
+export function getSeverityColor(severity: ReviewIssueSeverity): string {
+  switch (severity) {
+    case 'critical':
+      return '#e74c3c';
+    case 'major':
+      return '#e67e22';
+    case 'minor':
+      return '#f39c12';
+    case 'suggestion':
+      return '#3498db';
+    default:
+      return '#95a5a6';
+  }
+}
+
+export function getSeverityLabel(severity: ReviewIssueSeverity): string {
+  switch (severity) {
+    case 'critical':
+      return '严重';
+    case 'major':
+      return '重要';
+    case 'minor':
+      return '次要';
+    case 'suggestion':
+      return '建议';
+    default:
+      return severity;
+  }
+}
+
+export function getStatusLabel(status: ReviewIssueStatus): string {
+  switch (status) {
+    case 'pending':
+      return '待处理';
+    case 'confirmed':
+      return '已确认';
+    case 'rejected':
+      return '已驳回';
+    case 'resolved':
+      return '已解决';
+    default:
+      return status;
+  }
+}
+
+export function getReviewStatusLabel(status: ReviewStatus): string {
+  switch (status) {
+    case 'draft':
+      return '草稿';
+    case 'in_review':
+      return '审校中';
+    case 'approved':
+      return '已通过';
+    case 'rejected':
+      return '已驳回';
+    default:
+      return status;
+  }
 }
