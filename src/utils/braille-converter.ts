@@ -484,3 +484,56 @@ export function brailleToReverseText(doc: BrailleDocument): string {
   }
   return lines.join('\n');
 }
+
+export function dotsToUnicodeBraille(dots: boolean[][]): string {
+  let code = 0x2800;
+  if (dots[0]?.[0]) code |= 0x01;
+  if (dots[1]?.[0]) code |= 0x02;
+  if (dots[2]?.[0]) code |= 0x04;
+  if (dots[0]?.[1]) code |= 0x08;
+  if (dots[1]?.[1]) code |= 0x10;
+  if (dots[2]?.[1]) code |= 0x20;
+  return String.fromCharCode(code);
+}
+
+export function brailleDocumentToUnicode(doc: BrailleDocument): string {
+  const lines: string[] = [];
+  for (const line of doc.lines) {
+    let lineText = '';
+    for (const cell of line.cells) {
+      lineText += dotsToUnicodeBraille(cell.dots);
+      lineText += '\u2004';
+    }
+    lines.push(lineText);
+  }
+  return lines.join('\n');
+}
+
+export function isDocumentModified(doc: BrailleDocument, originalText: string): boolean {
+  const originalDoc = textToBraille(originalText);
+  if (originalDoc.lines.length !== doc.lines.length) return true;
+  for (let li = 0; li < doc.lines.length; li++) {
+    if (originalDoc.lines[li].cells.length !== doc.lines[li].cells.length) return true;
+    for (let ci = 0; ci < doc.lines[li].cells.length; ci++) {
+      if (!dotsEqual(originalDoc.lines[li].cells[ci].dots, doc.lines[li].cells[ci].dots)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function getModifiedCells(doc: BrailleDocument, originalText: string): Set<string> {
+  const modified = new Set<string>();
+  const originalDoc = textToBraille(originalText);
+  if (originalDoc.lines.length !== doc.lines.length) return modified;
+  for (let li = 0; li < doc.lines.length; li++) {
+    if (originalDoc.lines[li].cells.length !== doc.lines[li].cells.length) continue;
+    for (let ci = 0; ci < doc.lines[li].cells.length; ci++) {
+      if (!dotsEqual(originalDoc.lines[li].cells[ci].dots, doc.lines[li].cells[ci].dots)) {
+        modified.add(`${li}-${ci}`);
+      }
+    }
+  }
+  return modified;
+}

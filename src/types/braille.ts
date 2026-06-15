@@ -8,6 +8,7 @@ export interface BrailleCell {
   id: string;
   sourceChar: string;
   dots: boolean[][];
+  originalDots?: boolean[][];
   isUnknown: boolean;
   isNumberSign?: boolean;
   isLetterSign?: boolean;

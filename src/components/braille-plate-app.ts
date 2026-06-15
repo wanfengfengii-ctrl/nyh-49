@@ -32,6 +32,9 @@ import {
   validateDocument,
   brailleToReverseText,
   calculateLayout,
+  brailleDocumentToUnicode,
+  getModifiedCells,
+  dotsToUnicodeBraille,
 } from '../utils/braille-converter.js';
 
 setBasePath('https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.16.0/cdn/');
@@ -308,6 +311,12 @@ export class BraillePlateApp extends LitElement {
   @state()
   activeTab: string = 'reading';
 
+  @state()
+  private _tempLineSpacing: number | null = null;
+
+  @state()
+  private _tempCharSpacing: number | null = null;
+
   override firstUpdated() {
     this.revalidate();
   }
@@ -330,18 +339,38 @@ export class BraillePlateApp extends LitElement {
 
   private handleLineSpacing(e: Event) {
     const target = e.target as any;
-    const value = Number(target.value);
-    if (!isNaN(value) && value > 0) {
-      this.brailleDoc = { ...this.brailleDoc, lineSpacing: value };
+    const rawValue = Number(target.value);
+    if (isNaN(rawValue)) return;
+    this._tempLineSpacing = rawValue;
+    if (rawValue <= 0) {
+      this.brailleDoc = { ...this.brailleDoc, lineSpacing: rawValue };
+      this.revalidate();
+      setTimeout(() => {
+        this.brailleDoc = { ...this.brailleDoc, lineSpacing: 1 };
+        this.revalidate();
+      }, 1500);
+    } else {
+      this._tempLineSpacing = null;
+      this.brailleDoc = { ...this.brailleDoc, lineSpacing: rawValue };
       this.revalidate();
     }
   }
 
   private handleCharSpacing(e: Event) {
     const target = e.target as any;
-    const value = Number(target.value);
-    if (!isNaN(value) && value > 0) {
-      this.brailleDoc = { ...this.brailleDoc, charSpacing: value };
+    const rawValue = Number(target.value);
+    if (isNaN(rawValue)) return;
+    this._tempCharSpacing = rawValue;
+    if (rawValue <= 0) {
+      this.brailleDoc = { ...this.brailleDoc, charSpacing: rawValue };
+      this.revalidate();
+      setTimeout(() => {
+        this.brailleDoc = { ...this.brailleDoc, charSpacing: 1 };
+        this.revalidate();
+      }, 1500);
+    } else {
+      this._tempCharSpacing = null;
+      this.brailleDoc = { ...this.brailleDoc, charSpacing: rawValue };
       this.revalidate();
     }
   }
@@ -389,10 +418,12 @@ export class BraillePlateApp extends LitElement {
   }
 
   private handleReset() {
-    this.brailleDoc = textToBraille(this.inputText);
-    this.brailleDoc.lineSpacing = DEFAULT_LINE_SPACING;
-    this.brailleDoc.charSpacing = DEFAULT_CHAR_SPACING;
-    this.brailleDoc.dotRadius = DEFAULT_DOT_RADIUS;
+    this.brailleDoc = {
+      ...this.brailleDoc,
+      lineSpacing: DEFAULT_LINE_SPACING,
+      charSpacing: DEFAULT_CHAR_SPACING,
+      dotRadius: DEFAULT_DOT_RADIUS,
+    };
     this.revalidate();
   }
 
@@ -400,6 +431,50 @@ export class BraillePlateApp extends LitElement {
     this.inputText = '';
     this.brailleDoc = textToBraille('');
     this.revalidate();
+  }
+
+  private getBraillePreviewHtml(isReverse: boolean): string {
+    const modifiedCells = getModifiedCells(this.brailleDoc, this.inputText);
+    const linesHtml: string[] = [];
+
+    for (let li = 0; li < this.brailleDoc.lines.length; li++) {
+      const line = this.brailleDoc.lines[li];
+      const cellsHtml: string[] = [];
+
+      for (let ci = 0; ci < line.cells.length; ci++) {
+        const cell = line.cells[ci];
+        const key = `${li}-${ci}`;
+        const isModified = modifiedCells.has(key);
+        const isUnknown = cell.isUnknown;
+        const brailleChar = isReverse
+          ? dotsToUnicodeBraille(cell.dots.map(r => [...r].reverse()))
+          : dotsToUnicodeBraille(cell.dots);
+
+        let style = '';
+        let title = '';
+        if (isModified) {
+          style = 'background: rgba(231, 76, 60, 0.18); border: 1px solid #e74c3c; border-radius: 4px; padding: 0 2px; margin: 0 1px;';
+          title = `第${li + 1}行第${ci + 1}格 - 已手动修改`;
+        } else if (isUnknown) {
+          style = 'background: rgba(243, 156, 18, 0.18); border: 1px dashed #f39c12; border-radius: 4px; padding: 0 2px; margin: 0 1px;';
+          title = `第${li + 1}行第${ci + 1}格 - 未识别字符: "${cell.sourceChar}"`;
+        } else {
+          style = 'padding: 0 2px; margin: 0 1px;';
+          if (cell.sourceChar) {
+            title = `第${li + 1}行第${ci + 1}格 - 原字符: "${cell.sourceChar}"`;
+          }
+        }
+
+        cellsHtml.push(`<span style="${style}" title="${title}">${brailleChar}</span>`);
+      }
+
+      const lineStyle = isReverse
+        ? 'direction: rtl; unicode-bidi: bidi-override; text-align: right;'
+        : '';
+      linesHtml.push(`<div style="${lineStyle}">${cellsHtml.join('')}</div>`);
+    }
+
+    return linesHtml.join('');
   }
 
   private getStats() {
@@ -487,7 +562,7 @@ export class BraillePlateApp extends LitElement {
                 <span class="control-value">${this.brailleDoc.lineSpacing}px</span>
               </div>
               <sl-range
-                min="10"
+                min="-20"
                 max="100"
                 step="1"
                 .value=${this.brailleDoc.lineSpacing}
@@ -502,7 +577,7 @@ export class BraillePlateApp extends LitElement {
                 <span class="control-value">${this.brailleDoc.charSpacing}px</span>
               </div>
               <sl-range
-                min="5"
+                min="-20"
                 max="80"
                 step="1"
                 .value=${this.brailleDoc.charSpacing}
@@ -724,21 +799,31 @@ export class BraillePlateApp extends LitElement {
                   <div class="card-title" style="margin-bottom: 10px;">
                     🔄 模拟压印预览（铜版翻转后在纸上的效果）
                   </div>
+                  <div style="margin-bottom: 10px; font-size: 12px; color: #666;">
+                    <span style="display: inline-flex; align-items: center; gap: 4px; margin-right: 16px;">
+                      <span style="display:inline-block;width:14px;height:14px;background:rgba(231,76,60,0.18);border:1px solid #e74c3c;border-radius:3px;"></span>
+                      已手动修改
+                    </span>
+                    <span style="display: inline-flex; align-items: center; gap: 4px;">
+                      <span style="display:inline-block;width:14px;height:14px;background:rgba(243,156,18,0.18);border:1px dashed #f39c12;border-radius:3px;"></span>
+                      未识别字符
+                    </span>
+                  </div>
                   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                     <div style="padding: 14px; background: #fef9e7; border-radius: 8px; border: 2px dashed #d4ac0d;">
                       <div style="font-size: 12px; color: #b7950b; font-weight: 600; margin-bottom: 6px;">
-                        铜版（制版侧）
+                        铜版（制版侧 · 左右镜像）
                       </div>
-                      <div style="font-family: monospace; white-space: pre-wrap; word-break: break-all; font-size: 12px; color: #7d6608; line-height: 1.8; direction: rtl; unicode-bidi: bidi-override;">
-                        ${unsafeHTML(this.getReversePreview().replace(/\n/g, '<br/>'))}
+                      <div style="font-family: monospace; white-space: pre-wrap; word-break: break-all; font-size: 24px; color: #7d6608; line-height: 1.8; letter-spacing: 2px;">
+                        ${unsafeHTML(this.getBraillePreviewHtml(true))}
                       </div>
                     </div>
                     <div style="padding: 14px; background: #eafaf1; border-radius: 8px; border: 2px dashed #27ae60;">
                       <div style="font-size: 12px; color: #1e8449; font-weight: 600; margin-bottom: 6px;">
-                        纸张（压印后正面阅读）
+                        纸张（压印后 · 正面阅读）
                       </div>
-                      <div style="font-family: monospace; white-space: pre-wrap; word-break: break-all; font-size: 12px; color: #145a32; line-height: 1.8;">
-                        ${unsafeHTML(this.inputText.replace(/\n/g, '<br/>'))}
+                      <div style="font-family: monospace; white-space: pre-wrap; word-break: break-all; font-size: 24px; color: #145a32; line-height: 1.8; letter-spacing: 2px;">
+                        ${unsafeHTML(this.getBraillePreviewHtml(false))}
                       </div>
                     </div>
                   </div>
