@@ -42,6 +42,8 @@ import {
   validateDocument,
   validatePaginatedDocument,
   validateMirrorConsistency,
+  validateThreeViewConsistency,
+  findManualModifications,
   brailleToReverseText,
   calculateLayout,
   brailleDocumentToUnicode,
@@ -628,13 +630,23 @@ export class BraillePlateApp extends LitElement {
     description: string,
     before: BrailleDocument,
     after: BrailleDocument,
-    metadata?: Record<string, any>
+    metadata?: Record<string, any>,
+    plateSize?: {
+      widthBefore?: number;
+      widthAfter?: number;
+      heightBefore?: number;
+      heightAfter?: number;
+    }
   ) {
     this.history = pushHistoryEntry(this.history, {
       action,
       description,
       documentBefore: before,
       documentAfter: after,
+      plateWidthBefore: plateSize?.widthBefore,
+      plateWidthAfter: plateSize?.widthAfter,
+      plateHeightBefore: plateSize?.heightBefore,
+      plateHeightAfter: plateSize?.heightAfter,
       metadata,
     });
   }
@@ -749,7 +761,8 @@ export class BraillePlateApp extends LitElement {
         `调整铜版宽度 ${oldWidth}px → ${value}px`,
         before,
         cloneDocument(this.brailleDoc),
-        { oldWidth, newWidth: value }
+        { oldWidth, newWidth: value },
+        { widthBefore: oldWidth, widthAfter: value }
       );
       this.revalidate();
     }
@@ -767,7 +780,8 @@ export class BraillePlateApp extends LitElement {
         `调整铜版高度 ${oldHeight}px → ${value}px`,
         before,
         cloneDocument(this.brailleDoc),
-        { oldHeight, newHeight: value }
+        { oldHeight, newHeight: value },
+        { heightBefore: oldHeight, heightAfter: value }
       );
       this.revalidate();
     }
@@ -839,6 +853,12 @@ export class BraillePlateApp extends LitElement {
     if (result.document) {
       this.history = result.state;
       this.brailleDoc = result.document;
+      if (result.plateWidth != null) {
+        this.plateWidth = result.plateWidth;
+      }
+      if (result.plateHeight != null) {
+        this.plateHeight = result.plateHeight;
+      }
       this.clearHighlights();
       this.revalidate();
     }
@@ -849,6 +869,12 @@ export class BraillePlateApp extends LitElement {
     if (result.document) {
       this.history = result.state;
       this.brailleDoc = result.document;
+      if (result.plateWidth != null) {
+        this.plateWidth = result.plateWidth;
+      }
+      if (result.plateHeight != null) {
+        this.plateHeight = result.plateHeight;
+      }
       this.clearHighlights();
       this.revalidate();
     }
@@ -1013,7 +1039,6 @@ export class BraillePlateApp extends LitElement {
   }
 
   private getConsistencyChecks() {
-    const mirrorErrors = validateMirrorConsistency(this.brailleDoc);
     const pageDoc = this.paginatedDoc.pages[this.currentPageIndex] ?? this.brailleDoc;
     const currentPageErrors = validateDocument(
       pageDoc,
@@ -1022,20 +1047,16 @@ export class BraillePlateApp extends LitElement {
       this.currentPageIndex
     );
 
-    let readingMatchesImprint = true;
-    for (let li = 0; li < this.brailleDoc.lines.length; li++) {
-      for (let ci = 0; ci < this.brailleDoc.lines[li].cells.length; ci++) {
-        const cell = this.brailleDoc.lines[li].cells[ci];
-        const doubleMirrored = dotsToUnicodeBraille(
-          cell.dots.map(r => [...r].reverse()).map(r => [...r].reverse())
-        );
-        const original = dotsToUnicodeBraille(cell.dots);
-        if (doubleMirrored !== original) {
-          readingMatchesImprint = false;
-          break;
-        }
-      }
-      if (!readingMatchesImprint) break;
+    const threeViewResult = validateThreeViewConsistency(this.brailleDoc);
+    const manualModifications = findManualModifications(this.brailleDoc);
+    const modificationCount = manualModifications.length;
+
+    const mirrorErrors = threeViewResult.errors.filter(e => e.type === 'mirror_mismatch');
+    const imprintErrors = threeViewResult.errors.filter(e => e.type === 'imprint_mismatch');
+
+    let modificationText = '无手动修改';
+    if (modificationCount > 0) {
+      modificationText = `检测到 ${modificationCount} 处手动修改`;
     }
 
     return [
@@ -1045,11 +1066,11 @@ export class BraillePlateApp extends LitElement {
       },
       {
         pass: mirrorErrors.length === 0,
-        text: '镜像关系一致性',
+        text: `镜像关系一致性 (${mirrorErrors.length} 处不一致)`,
       },
       {
-        pass: readingMatchesImprint,
-        text: '阅读↔制版↔压印三方联动',
+        pass: imprintErrors.length === 0 && threeViewResult.details.readingMatchesImprint,
+        text: `阅读↔制版↔压印三方联动 (${modificationText})`,
       },
       {
         pass: this.getErrorCountBySeverity().errors === 0,

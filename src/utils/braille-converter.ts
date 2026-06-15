@@ -251,8 +251,16 @@ export function textToBraille(text: string): BrailleDocument {
     });
   }
 
+  const finalLines = lines.map(line => ({
+    ...line,
+    cells: line.cells.map(cell => ({
+      ...cell,
+      originalDots: cell.originalDots ? cloneDots(cell.originalDots) : cloneDots(cell.dots),
+    })),
+  }));
+
   return {
-    lines,
+    lines: finalLines,
     lineSpacing: DEFAULT_LINE_SPACING,
     charSpacing: DEFAULT_CHAR_SPACING,
     dotRadius: DEFAULT_DOT_RADIUS,
@@ -284,7 +292,11 @@ export function toggleDot(
         ) {
           newDots[pos.dotRow][pos.dotCol] = !newDots[pos.dotRow][pos.dotCol];
         }
-        return { ...cell, dots: newDots };
+        return {
+          ...cell,
+          dots: newDots,
+          originalDots: cell.originalDots ? cloneDots(cell.originalDots) : cloneDots(cell.dots),
+        };
       }),
     };
   });
@@ -344,11 +356,11 @@ export function paginateDocument(
   plateWidth: number,
   plateHeight: number
 ): PaginatedDocument {
-  const layout = calculateLayout(doc, plateWidth, plateHeight);
+  const wrappedDoc = wrapLongLines(doc, plateWidth);
+  const layout = calculateLayout(wrappedDoc, plateWidth, plateHeight);
   const padding = layout.padding;
   const lineHeight = layout.lineHeight;
   const availableHeight = plateHeight - padding * 2;
-  const availableWidth = plateWidth - padding * 2;
   const linesPerPage = Math.max(1, Math.floor(availableHeight / lineHeight));
 
   const pages: BrailleDocument[] = [];
@@ -357,28 +369,20 @@ export function paginateDocument(
 
   let currentLine = 0;
 
-  while (currentLine < doc.lines.length) {
+  while (currentLine < wrappedDoc.lines.length) {
     const pageLines: BrailleLine[] = [];
     const startLine = currentLine;
     let remainingLines = linesPerPage;
 
-    while (remainingLines > 0 && currentLine < doc.lines.length) {
-      const line = doc.lines[currentLine];
-      const lineWidth =
-        line.cells.length * layout.cellWidth +
-        Math.max(0, line.cells.length - 1) * doc.charSpacing;
-
-      if (lineWidth > availableWidth) {
-        overflow = true;
-      }
-
+    while (remainingLines > 0 && currentLine < wrappedDoc.lines.length) {
+      const line = wrappedDoc.lines[currentLine];
       pageLines.push(line);
       currentLine++;
       remainingLines--;
     }
 
     pages.push({
-      ...doc,
+      ...wrappedDoc,
       lines: pageLines,
     });
     pageLineRanges.push({ startLine, endLine: currentLine - 1 });
@@ -386,7 +390,7 @@ export function paginateDocument(
 
   if (pages.length === 0) {
     pages.push({
-      ...doc,
+      ...wrappedDoc,
       lines: [],
     });
     pageLineRanges.push({ startLine: 0, endLine: -1 });
@@ -397,6 +401,46 @@ export function paginateDocument(
   }
 
   return { pages, pageLineRanges, overflow };
+}
+
+export function wrapLongLines(
+  doc: BrailleDocument,
+  plateWidth: number
+): BrailleDocument {
+  const layout = calculateLayout(doc, plateWidth, plateWidth);
+  const availableWidth = plateWidth - layout.padding * 2;
+  const cellWidth = layout.cellWidth;
+  const charSpacing = doc.charSpacing;
+
+  const maxCellsPerLine = Math.max(
+    1,
+    Math.floor((availableWidth + charSpacing) / (cellWidth + charSpacing))
+  );
+
+  const newLines: BrailleLine[] = [];
+
+  for (const line of doc.lines) {
+    const totalCells = line.cells.length;
+    if (totalCells <= maxCellsPerLine) {
+      newLines.push(line);
+      continue;
+    }
+
+    let offset = 0;
+    while (offset < totalCells) {
+      const chunkCells = line.cells.slice(offset, offset + maxCellsPerLine);
+      newLines.push({
+        id: `${line.id}-part-${Math.floor(offset / maxCellsPerLine)}`,
+        cells: chunkCells,
+      });
+      offset += maxCellsPerLine;
+    }
+  }
+
+  return {
+    ...doc,
+    lines: newLines,
+  };
 }
 
 export function validateDocument(
@@ -489,24 +533,110 @@ export function validatePaginatedDocument(
   return allErrors;
 }
 
-export function validateMirrorConsistency(doc: BrailleDocument): ValidationError[] {
-  const errors: ValidationError[] = [];
+export function findManualModifications(doc: BrailleDocument): {
+  lineIndex: number;
+  cellIndex: number;
+  originalDots: boolean[][];
+  currentDots: boolean[][];
+}[] {
+  const modifications: {
+    lineIndex: number;
+    cellIndex: number;
+    originalDots: boolean[][];
+    currentDots: boolean[][];
+  }[] = [];
+
   for (let li = 0; li < doc.lines.length; li++) {
     for (let ci = 0; ci < doc.lines[li].cells.length; ci++) {
       const cell = doc.lines[li].cells[ci];
-      const mirrored = mirrorDots(cell.dots);
-      if (!dotsEqual(mirrorDots(mirrored), cell.dots)) {
-        errors.push({
-          type: 'mirror_mismatch',
+      if (cell.originalDots && !dotsEqual(cell.dots, cell.originalDots)) {
+        modifications.push({
           lineIndex: li,
           cellIndex: ci,
-          message: `第 ${li + 1} 行第 ${ci + 1} 格镜像一致性校验异常`,
-          severity: 'warning',
+          originalDots: cloneDots(cell.originalDots),
+          currentDots: cloneDots(cell.dots),
         });
       }
     }
   }
-  return errors;
+  return modifications;
+}
+
+export function validateThreeViewConsistency(doc: BrailleDocument): {
+  pass: boolean;
+  modifications: ReturnType<typeof findManualModifications>;
+  errors: ValidationError[];
+  details: {
+    readingMatchesImprint: boolean;
+    plateIsMirrorOfReading: boolean;
+    imprintIsMirrorOfPlate: boolean;
+  };
+} {
+  const modifications = findManualModifications(doc);
+  const errors: ValidationError[] = [];
+  let readingMatchesImprint = true;
+  let plateIsMirrorOfReading = true;
+  let imprintIsMirrorOfPlate = true;
+
+  for (let li = 0; li < doc.lines.length; li++) {
+    for (let ci = 0; ci < doc.lines[li].cells.length; ci++) {
+      const cell = doc.lines[li].cells[ci];
+      const readingDots = cell.dots;
+      const plateDots = mirrorDots(cell.dots);
+      const imprintDots = mirrorDots(plateDots);
+
+      if (!dotsEqual(readingDots, imprintDots)) {
+        readingMatchesImprint = false;
+        errors.push({
+          type: 'imprint_mismatch',
+          lineIndex: li,
+          cellIndex: ci,
+          message: `第 ${li + 1} 行第 ${ci + 1} 格：阅读视图与压印预览不一致`,
+          severity: 'error',
+        });
+      }
+
+      if (!dotsEqual(plateDots, mirrorDots(readingDots))) {
+        plateIsMirrorOfReading = false;
+        errors.push({
+          type: 'mirror_mismatch',
+          lineIndex: li,
+          cellIndex: ci,
+          message: `第 ${li + 1} 行第 ${ci + 1} 格：制版视图不是阅读视图的镜像`,
+          severity: 'error',
+        });
+      }
+
+      if (!dotsEqual(imprintDots, mirrorDots(plateDots))) {
+        imprintIsMirrorOfPlate = false;
+        errors.push({
+          type: 'mirror_mismatch',
+          lineIndex: li,
+          cellIndex: ci,
+          message: `第 ${li + 1} 行第 ${ci + 1} 格：压印预览不是制版视图的镜像`,
+          severity: 'error',
+        });
+      }
+    }
+  }
+
+  const pass = errors.length === 0;
+
+  return {
+    pass,
+    modifications,
+    errors,
+    details: {
+      readingMatchesImprint,
+      plateIsMirrorOfReading,
+      imprintIsMirrorOfPlate,
+    },
+  };
+}
+
+export function validateMirrorConsistency(doc: BrailleDocument): ValidationError[] {
+  const result = validateThreeViewConsistency(doc);
+  return result.errors;
 }
 
 export function getLineY(
@@ -699,9 +829,14 @@ export function pushHistoryEntry(
 
 export function undoHistory(
   state: HistoryManagerState
-): { state: HistoryManagerState; document: BrailleDocument | null } {
+): {
+  state: HistoryManagerState;
+  document: BrailleDocument | null;
+  plateWidth: number | null;
+  plateHeight: number | null;
+} {
   if (state.currentIndex < 0) {
-    return { state, document: null };
+    return { state, document: null, plateWidth: null, plateHeight: null };
   }
 
   const entry = state.entries[state.currentIndex];
@@ -713,14 +848,21 @@ export function undoHistory(
       currentIndex: newIndex,
     },
     document: cloneDocument(entry.documentBefore),
+    plateWidth: entry.plateWidthBefore ?? null,
+    plateHeight: entry.plateHeightBefore ?? null,
   };
 }
 
 export function redoHistory(
   state: HistoryManagerState
-): { state: HistoryManagerState; document: BrailleDocument | null } {
+): {
+  state: HistoryManagerState;
+  document: BrailleDocument | null;
+  plateWidth: number | null;
+  plateHeight: number | null;
+} {
   if (state.currentIndex >= state.entries.length - 1) {
-    return { state, document: null };
+    return { state, document: null, plateWidth: null, plateHeight: null };
   }
 
   const newIndex = state.currentIndex + 1;
@@ -732,6 +874,8 @@ export function redoHistory(
       currentIndex: newIndex,
     },
     document: cloneDocument(entry.documentAfter),
+    plateWidth: entry.plateWidthAfter ?? null,
+    plateHeight: entry.plateHeightAfter ?? null,
   };
 }
 

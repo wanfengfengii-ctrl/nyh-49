@@ -73,6 +73,10 @@ export interface HistoryEntry {
   description: string;
   documentBefore: BrailleDocument;
   documentAfter: BrailleDocument;
+  plateWidthBefore?: number;
+  plateWidthAfter?: number;
+  plateHeightBefore?: number;
+  plateHeightAfter?: number;
   metadata?: Record<string, any>;
 }
 

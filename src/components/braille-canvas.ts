@@ -145,17 +145,30 @@ export class BrailleCanvas extends LitElement {
     if (!this.canvasEl || !this.document) return;
     const layout = calculateLayout(this.document, this.plateWidth, this.plateHeight);
 
+    const container = this.canvasEl.parentElement;
+    if (!container) return;
+
+    let targetScrollX = 0;
+    let targetScrollY = 0;
+
     if (highlight.lineIndex >= 0) {
-      const lineY = getLineY(highlight.lineIndex, layout);
-      const container = this.canvasEl.parentElement;
-      if (container) {
-        const targetScroll = Math.max(0, lineY - 50);
-        container.scrollTo({
-          top: targetScroll,
-          behavior: 'smooth',
-        });
-      }
+      targetScrollY = getLineY(highlight.lineIndex, layout);
     }
+
+    if (highlight.cellIndex != null && highlight.cellIndex >= 0 && highlight.lineIndex >= 0) {
+      const cellX = layout.padding + highlight.cellIndex * (layout.cellWidth + this.document.charSpacing);
+      targetScrollX = cellX;
+    }
+
+    const margin = 60;
+    const finalScrollY = Math.max(0, targetScrollY - margin);
+    const finalScrollX = Math.max(0, targetScrollX - margin);
+
+    container.scrollTo({
+      top: finalScrollY,
+      left: finalScrollX,
+      behavior: 'smooth',
+    });
   }
 
   private renderCanvas() {
